@@ -128,6 +128,9 @@ var apiRoutes = map[string]apiRoute{
 func NewServeHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", handleHealth)
+	// /healthz alias: the other seven Pubvera apps expose /healthz, and external
+	// monitors probe that path by convention. Same handler, no behaviour change.
+	mux.HandleFunc("/healthz", handleHealth)
 	mux.HandleFunc("/api/trend", handleTrend)
 	mux.HandleFunc("/api/failure-modes", handleFailureModes)
 	mux.HandleFunc("/api/devices", handleDevices)
