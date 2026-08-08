@@ -20,15 +20,22 @@ jobs:
         uses: actions/checkout@v6
         with:
           lfs: true
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
 
+      - name: Test
+        run: go test -race ./...
       - name: Check inline JavaScript
         run: |
           # go vet does not see the JavaScript embedded in index.html, so a
           # missing bracket there ships green and breaks the page at runtime.
           # Each <script> block is extracted and parsed with node --check.
           # This app keeps its page at web/index.html, not the repository root,
-          # which is why both paths are tried. It also has no Go test files, so
-          # until it does, this is the only gate between a push and an image.
+          # which is why both paths are tried. The Go suite above covers the
+          # server; this covers the page, which go vet cannot reach.
           # A file that exists but yields no checkable block fails the build:
           # silently checking nothing is the failure mode this guards against.
           set -euo pipefail
