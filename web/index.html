@@ -2263,14 +2263,38 @@
     return null;
   }
 
+  // exportMeta collects the provenance every export format needs: what was
+  // searched, how many rows are leaving versus how many the query matched,
+  // and which filters were active. rows_total stays null when the true
+  // result-set size is unknown — never invent one.
+  function exportMeta(key) {
+    var rows = rowsFromLastData(key) || [];
+    var isUdi = (key === 'udi' && deviceView);
+    var total = (isUdi && deviceView.total) ? deviceView.total : null;
+    return {
+      app: 'Devicera',
+      analysis: ANALYSIS_LABEL[key] || key,
+      query: currentDevice || '',
+      filters: isUdi ? (deviceView.desc() || '') : '',
+      rows_exported: rows.length,
+      rows_total: total,
+      source: 'openFDA',
+      exported_at: new Date().toISOString()
+    };
+  }
+
   // exportTitle is the one-line provenance header written into exports: what
-  // this is, when, and — for the device table — which filters were active.
+  // this is, what was searched, how much of the result set it covers, where
+  // the data came from, when — and, for the device table, the active filters.
   function exportTitle(key) {
-    var t = 'Devicera export · ' + (ANALYSIS_LABEL[key] || key) + ' · ' + new Date().toISOString().slice(0, 10);
-    if (key === 'udi' && deviceView) {
-      var d = deviceView.desc();
-      if (d) t += ' · ' + d;
+    var m = exportMeta(key);
+    var t = 'Devicera export · ' + m.analysis;
+    if (m.query) t += ' · query: "' + m.query + '"';
+    if (m.rows_total !== null) {
+      t += ' · showing ' + fmtNum(m.rows_exported) + ' of ' + fmtNum(m.rows_total) + ' rows';
     }
+    t += ' · source: ' + m.source + ' · ' + m.exported_at.slice(0, 10);
+    if (m.filters) t += ' · ' + m.filters;
     return t;
   }
 
@@ -2377,8 +2401,15 @@
     return (n || 'device').toLowerCase() + '_' + (i + 1);
   }
 
+  // The record's own year, taken from its Last Update date. Absent or
+  // unparseable dates get no year field at all — a missing field is honest,
+  // the export year would be wrong.
+  function bibYear(r) {
+    var m = /^(\d{4})/.exec(String((r && r['Last Update']) || '').trim());
+    return m ? m[1] : '';
+  }
+
   function toBibTeX(rows) {
-    var y = new Date().getFullYear();
     var out = [];
     rows.forEach(function (r, i) {
       var title = bibEsc(String(r['Device Name'] || '').slice(0, 80)) || 'Unnamed medical device';
@@ -2390,7 +2421,8 @@
       lines.push('  title        = {' + title + '},');
       if (company) lines.push('  author       = {{' + company + '}},');
       lines.push('  howpublished = {FDA Device Registration and Listing Database (GUDID)' + (udi ? ', UDI: ' + udi : '') + '},');
-      lines.push('  year         = {' + y + '},');
+      var ry = bibYear(r);
+      if (ry) lines.push('  year         = {' + ry + '},');
       if (udi) lines.push('  url          = {https://accessgudid.nlm.nih.gov/devices/' + encodeURIComponent(udi) + '},');
       lines.push('  note         = {' + (cls ? 'Device ' + cls : 'Device class unknown') + (cat ? ' — ' + cat : '') + '; exported from Devicera; data via openFDA}');
       lines.push('}');
@@ -2425,7 +2457,9 @@
     if (key === 'udi' && deviceView) {
       var vis = deviceView.rows();
       if (!vis.length) { alert('No rows match the current filters.'); return; }
-      var wrapped = { export: exportTitle(key), records: vis };
+      var m = exportMeta(key);
+      if (m.rows_total === null) m.rows_total = m.rows_exported;
+      var wrapped = { export: m, rows: vis };
       triggerDownload(new Blob([JSON.stringify(wrapped, null, 2)], { type: 'application/json' }), filename);
       return;
     }
@@ -2728,6 +2762,9 @@
     // the table shows under the current chips/filters/sort.
     deviceView = {
       rows: viewRows,
+      // The true result-set size reported by openFDA (the "of 16,787" on the
+      // meta line), so exports can state the truncation. null when unknown.
+      total: (devicesResp && devicesResp.data && devicesResp.data.total) || null,
       desc: function () {
         var parts = [];
         if (state.categoryLabel) parts.push('category: ' + state.categoryLabel);
