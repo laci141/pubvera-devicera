@@ -134,6 +134,10 @@ func NewServeHandler() http.Handler {
 	mux.HandleFunc("/api/trend", handleTrend)
 	mux.HandleFunc("/api/failure-modes", handleFailureModes)
 	mux.HandleFunc("/api/devices", handleDevices)
+	// Deliberately NOT under /api/: Caddy protects /api/* with forward_auth, and
+	// the page needs this config BEFORE it can sign anyone in. Serving it from a
+	// protected path would make the requirement circular.
+	mux.HandleFunc("/config.json", handleConfig)
 	for path, route := range apiRoutes {
 		mux.HandleFunc(path, routeHandler(route))
 	}
@@ -162,6 +166,40 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 		"modules":    moduleCount,
 		"disclaimer": cliutil.Disclaimer,
 	})
+}
+
+// browserConfig is the bootstrap payload /config.json hands to the page so it
+// can build its Supabase client. SupabaseAnonKey is the PUBLISHABLE
+// (browser-side) key, never the secret one: it is designed to be visible in a
+// browser and Row Level Security is what protects the data. It is still never
+// logged.
+type browserConfig struct {
+	SupabaseURL     string `json:"supabase_url"`
+	SupabaseAnonKey string `json:"supabase_anon_key"`
+}
+
+// handleConfig answers /config.json with the browser-side Supabase config read
+// from SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY.
+//
+// A missing variable is not an error. An empty pair with status 200 is a valid
+// answer that puts the page into unauthenticated mode, which is what keeps
+// local development and the current deployment working until the environment is
+// set. Half a config is no config: one empty variable blanks both, so the page
+// never tries to build a client it cannot use.
+func handleConfig(w http.ResponseWriter, r *http.Request) {
+	if !allowGET(w, r) {
+		return
+	}
+	// supaURL, not url: the net/url package is imported in this file.
+	supaURL := strings.TrimSpace(getenv("SUPABASE_URL"))
+	supaKey := strings.TrimSpace(getenv("SUPABASE_PUBLISHABLE_KEY"))
+	if supaURL == "" || supaKey == "" {
+		supaURL, supaKey = "", ""
+	}
+	// Never cache: a stale key surviving a key rotation would be hard to
+	// diagnose from the browser side.
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, browserConfig{SupabaseURL: supaURL, SupabaseAnonKey: supaKey})
 }
 
 // routeHandler adapts one command to HTTP: required params → 400, command usage

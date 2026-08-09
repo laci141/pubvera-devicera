@@ -387,3 +387,79 @@ func TestDeviceRowStringBooleans(t *testing.T) {
 		t.Errorf("string is_labeled_as_no_nrl=false => %q, want \"Not labeled latex-free\"", row["latex"])
 	}
 }
+
+// withEnv swaps the getenv indirection for a fixed map for one test, so the
+// config route can be exercised without mutating the real process environment.
+func withEnv(t *testing.T, env map[string]string) {
+	t.Helper()
+	prev := getenv
+	getenv = func(k string) string { return env[k] }
+	t.Cleanup(func() { getenv = prev })
+}
+
+// /config.json is the browser bootstrap: it must be reachable OUTSIDE /api/,
+// must never be cached, and must answer 200 with an empty pair when the
+// environment is not set (the page then runs unauthenticated).
+func TestServeConfigJSON(t *testing.T) {
+	cases := []struct {
+		name        string
+		env         map[string]string
+		wantURL     string
+		wantAnonKey string
+	}{
+		{"configured",
+			map[string]string{"SUPABASE_URL": "https://proj.supabase.co", "SUPABASE_PUBLISHABLE_KEY": "pk_test"},
+			"https://proj.supabase.co", "pk_test"},
+		{"unset", map[string]string{}, "", ""},
+		// Half a config is no config: a client built from it could not sign
+		// anyone in, so both fields blank out together.
+		{"key missing", map[string]string{"SUPABASE_URL": "https://proj.supabase.co"}, "", ""},
+		{"url missing", map[string]string{"SUPABASE_PUBLISHABLE_KEY": "pk_test"}, "", ""},
+		// Whitespace-only values are an unset variable that survived a shell.
+		{"blank strings", map[string]string{"SUPABASE_URL": "  ", "SUPABASE_PUBLISHABLE_KEY": "  "}, "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withEnv(t, tc.env)
+			ts := httptest.NewServer(NewServeHandler())
+			defer ts.Close()
+
+			resp, err := http.Get(ts.URL + "/config.json")
+			if err != nil {
+				t.Fatalf("GET /config.json: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d want 200 (a missing config is not an error)", resp.StatusCode)
+			}
+			if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
+				t.Errorf("Cache-Control=%q want no-store", cc)
+			}
+			var v map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
+				t.Fatalf("body is not JSON: %v", err)
+			}
+			if v["supabase_url"] != tc.wantURL {
+				t.Errorf("supabase_url=%v want %q", v["supabase_url"], tc.wantURL)
+			}
+			if v["supabase_anon_key"] != tc.wantAnonKey {
+				t.Errorf("supabase_anon_key=%v want %q", v["supabase_anon_key"], tc.wantAnonKey)
+			}
+		})
+	}
+}
+
+// The config route is a plain GET like every other endpoint.
+func TestServeConfigNonGET405(t *testing.T) {
+	ts := httptest.NewServer(NewServeHandler())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/config.json", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("POST /config.json: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("POST /config.json status=%d want 405", resp.StatusCode)
+	}
+}
