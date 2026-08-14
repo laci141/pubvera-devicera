@@ -2490,7 +2490,10 @@
       var vis = deviceView.rows();
       if (!vis.length) { alert('No rows match the current filters.'); return; }
       var m = exportMeta(key);
-      if (m.rows_total === null) m.rows_total = m.rows_exported;
+      // rows_total stays null when the true result-set size is unknown. Filling
+      // it with rows_exported would assert "this is all there is", which is a
+      // claim the data does not support — a consumer cannot tell an unknown
+      // total from a complete one. Null is the honest value.
       var wrapped = { export: m, rows: vis };
       triggerDownload(new Blob([JSON.stringify(wrapped, null, 2)], { type: 'application/json' }), filename);
       return;
