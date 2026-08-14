@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -320,7 +321,7 @@ func TestMergeDeviceRowsDedup(t *testing.T) {
 
 	brand := []map[string]any{row("A"), row("B"), row("")}
 	category := []map[string]any{row("B"), row("C"), row("")}
-	rows, dups := mergeDeviceRows(brand, category, 100)
+	rows, dups, _ := mergeDeviceRows(brand, category, "", 100)
 
 	if len(rows) != 5 {
 		t.Fatalf("merged %d rows, want 5 (A, B, two UDI-less, C)", len(rows))
@@ -354,7 +355,7 @@ func TestMergeDeviceRowsDedup(t *testing.T) {
 	}
 
 	// Cap: 3 unique rows, max 2 → exactly 2 out.
-	capped, _ := mergeDeviceRows([]map[string]any{row("A"), row("B")}, []map[string]any{row("C")}, 2)
+	capped, _, _ := mergeDeviceRows([]map[string]any{row("A"), row("B")}, []map[string]any{row("C")}, "", 2)
 	if len(capped) != 2 {
 		t.Errorf("cap ignored: got %d rows, want 2", len(capped))
 	}
@@ -461,5 +462,173 @@ func TestServeConfigNonGET405(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("POST /config.json status=%d want 405", resp.StatusCode)
+	}
+}
+
+// ---- Device row grouping and ranking (fixtures from the measured "cancer"
+// page: 66 of 100 rows were Yancheng Jingwei microscope slides brand-named
+// "CANCER", plus sunglasses and specimen mailers, while the genuinely relevant
+// oncology assays were scattered below them) ----
+
+// devRow builds a device row the way deviceRow does, for the fields grouping
+// and ranking actually read.
+func devRow(name, company, class, category string) map[string]any {
+	return map[string]any{
+		"udi": name + "|" + company + "|" + category, "device_name": name,
+		"company": company, "device_class": class, "product_category": category,
+	}
+}
+
+func TestNormalizeDeviceName(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"CANCER", "cancer"},
+		{"Cancer®", "cancer"},
+		{"CANCER 7101", "cancer"},  // model suffix is not identity
+		{"CANCER, 25mm", "cancer"}, // size suffix is not identity
+		{"MI Cancer Seek®", "mi cancer seek"},
+		{"Prosigna Breast Cancer Prognostic Gene Signature Assay",
+			"prosigna breast cancer prognostic gene signature assay"},
+		{"  ", ""},
+		{"7101", "7101"}, // nothing but noise: keep it, do not fold everything
+	}
+	for _, c := range cases {
+		if got := normalizeDeviceName(c.in); got != c.want {
+			t.Errorf("normalizeDeviceName(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// One company's product line must collapse to one row carrying the fold count,
+// while different companies, categories or names stay separate.
+func TestCollapseDeviceGroups(t *testing.T) {
+	const jingwei = "Yancheng Jingwei Chemicals Co., Ltd"
+	slides := []map[string]any{}
+	for i := range 66 {
+		slides = append(slides, devRow(fmt.Sprintf("CANCER %d", 7100+i), jingwei, "Class I", "Slide, Microscope"))
+	}
+	cases := []struct {
+		name       string
+		in         []map[string]any
+		wantRows   int
+		wantFolded int
+	}{
+		{"mass registration collapses", slides, 1, 65},
+		{"different companies stay apart", []map[string]any{
+			devRow("CANCER", jingwei, "Class I", "Slide, Microscope"),
+			devRow("CANCER", "Other Optics Ltd", "Class I", "Slide, Microscope"),
+		}, 2, 0},
+		{"different categories stay apart", []map[string]any{
+			devRow("CANCER", jingwei, "Class I", "Slide, Microscope"),
+			devRow("CANCER", jingwei, "Class I", "Mailer, Specimen"),
+		}, 2, 0},
+		{"different names stay apart", []map[string]any{
+			devRow("MI Cancer Seek®", "Caris MPI", "Class III", "Panel Test System"),
+			devRow("Prosigna Breast Cancer Assay", "Caris MPI", "Class III", "Panel Test System"),
+		}, 2, 0},
+		{"nameless companyless rows are never grouped", []map[string]any{
+			devRow("", "", "", ""), devRow("", "", "", ""),
+		}, 2, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rows, folded := collapseDeviceGroups(c.in)
+			if len(rows) != c.wantRows || folded != c.wantFolded {
+				t.Fatalf("got %d rows / %d folded, want %d / %d", len(rows), folded, c.wantRows, c.wantFolded)
+			}
+			if c.wantFolded > 0 {
+				if n, _ := rows[0]["similar_folded"].(int); n != c.wantFolded {
+					t.Errorf("similar_folded=%v, want %d — the fold must be visible", rows[0]["similar_folded"], c.wantFolded)
+				}
+			}
+		})
+	}
+}
+
+// Structural evidence must outrank an exact brand-name collision.
+func TestDeviceRowScoreOrdering(t *testing.T) {
+	score := func(row map[string]any, matched string) int {
+		row["matched_on"] = matched
+		return deviceRowScore(row, "cancer")
+	}
+	slide := score(devRow("CANCER", "Yancheng Jingwei Chemicals Co., Ltd", "Class I", "Slide, Microscope"), "Brand name")
+	sunglasses := score(devRow("STAND UP TO CANCER", "Foster Grant", "Unclassified", "Sunglasses, Non-Prescription"), "Brand name")
+	seek := score(devRow("MI Cancer Seek®", "Caris MPI", "Class III", "Next Generation Sequencing Oncology Panel Test System"), "Brand name")
+	screening := score(devRow("Colon Cancer Screening Test", "Epigenomics", "Class II", "Cancer Screening Test, Colorectal"), "Both")
+
+	cases := []struct {
+		name     string
+		hi, lo   int
+		hiN, loN string
+	}{
+		{"category support beats brand collision", screening, slide, "Colon Cancer Screening Test", "CANCER slide"},
+		{"descriptive name beats brand collision", seek, slide, "MI Cancer Seek", "CANCER slide"},
+		{"reviewed class beats unclassified eyewear", seek, sunglasses, "MI Cancer Seek", "sunglasses"},
+		{"both-legs match beats single leg", screening, seek, "Colon Cancer Screening Test", "MI Cancer Seek"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if !(c.hi > c.lo) {
+				t.Errorf("%s scored %d, %s scored %d — want the first strictly higher", c.hiN, c.hi, c.loN, c.lo)
+			}
+		})
+	}
+}
+
+// A multi-word query must match the category word by word: the real pumps are
+// filed under "Alternate Controller Enabled Insulin Infusion Pump", which
+// contains neither the phrase "insulin pump" nor any brand-name match.
+func TestDeviceRowScoreMultiWordQuery(t *testing.T) {
+	pump := devRow("t:slim X2 Insulin Pump with Basal-IQ", "Tandem Diabetes Care, Inc.", "Class II", "Alternate Controller Enabled Insulin Infusion Pump")
+	pump["matched_on"] = "Brand name"
+	display := devRow("MiniMed™ Mobile", "MEDTRONIC MINIMED, INC.", "Class II", "Insulin Pump Secondary Display")
+	display["matched_on"] = "Product category"
+	unrelated := devRow("Insulin Syringe", "Acme", "Class II", "Syringe, Piston")
+	unrelated["matched_on"] = "Brand name"
+
+	if got, want := deviceRowScore(pump, "insulin pump"), deviceRowScore(display, "insulin pump"); got <= want {
+		t.Errorf("pump scored %d, secondary display %d — the pump itself must rank higher", got, want)
+	}
+	if got, want := deviceRowScore(display, "insulin pump"), deviceRowScore(unrelated, "insulin pump"); got <= want {
+		t.Errorf("full category match scored %d, partial %d — full support must rank higher", got, want)
+	}
+}
+
+// The full union must be collapsed and ranked BEFORE the cap, so the
+// product-category leg can never be truncated away by a brand-name leg that
+// filled the page with one company's product line.
+func TestMergeDeviceRowsRanksBeforeTruncating(t *testing.T) {
+	const jingwei = "Yancheng Jingwei Chemicals Co., Ltd"
+	brand := []map[string]any{}
+	for i := range 66 {
+		brand = append(brand, devRow(fmt.Sprintf("CANCER %d", 7100+i), jingwei, "Class I", "Slide, Microscope"))
+	}
+	brand = append(brand, devRow("STAND UP TO CANCER", "Foster Grant", "Unclassified", "Sunglasses, Non-Prescription"))
+	category := []map[string]any{
+		devRow("MI Cancer Seek®", "Caris MPI", "Class III", "Next Generation Sequencing Oncology Panel Test System"),
+		devRow("Prosigna Breast Cancer Prognostic Gene Signature Assay", "NanoString", "Class II", "Gene Expression Profiling Test System For Breast Cancer Prognosis"),
+	}
+
+	rows, dups, folded := mergeDeviceRows(brand, category, "cancer", 5)
+	if dups != 0 {
+		t.Errorf("dups=%d, want 0 (the two legs share no UDI)", dups)
+	}
+	if folded != 65 {
+		t.Errorf("folded=%d, want 65 (66 slides collapse to one)", folded)
+	}
+	if len(rows) != 4 {
+		t.Fatalf("got %d rows, want 4 (one slide + sunglasses + two assays, cap 5)", len(rows))
+	}
+	if got := str(rows[0]["device_name"]); !strings.Contains(got, "Cancer") || strings.HasPrefix(got, "CANCER ") {
+		t.Errorf("top row = %q, want a genuine oncology device, not a brand-name collision", got)
+	}
+	// Both category-leg rows must survive the cap.
+	names := map[string]bool{}
+	for _, r := range rows {
+		names[str(r["device_name"])] = true
+	}
+	for _, want := range []string{"MI Cancer Seek®", "Prosigna Breast Cancer Prognostic Gene Signature Assay"} {
+		if !names[want] {
+			t.Errorf("%q was truncated away; rows=%v", want, names)
+		}
 	}
 }

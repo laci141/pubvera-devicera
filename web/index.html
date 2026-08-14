@@ -2548,7 +2548,11 @@
     ['sterilization', 'Sterilization'],
     ['latex', 'Latex Content'],
     ['last_update', 'Last Update'],
-    ['matched_on', 'Matched On']
+    ['matched_on', 'Matched On'],
+    // How many near-identical registrations (same company, same product
+    // category, same device name) this row stands for. Blank means it stands
+    // for itself only. Nothing is ever dropped without showing up here.
+    ['similar_folded', 'Similar Folded']
   ];
 
   function isoDate(v) {
@@ -2625,13 +2629,15 @@
     results.appendChild(heading);
     var desc = document.createElement('div');
     desc.className = 'group-desc';
-    desc.textContent = 'Matched on brand name and FDA product category. Device names vary by manufacturer, so a major brand may not appear even when it exists — verify at AccessGUDID before concluding a device is absent. Click a column header to sort.';
+    desc.textContent = 'Matched on brand name and FDA product category, ranked by how much structural evidence supports the match (category hit, both searches agreeing, a name that is more than the query itself). One company’s near-identical registrations are folded into a single row — see the Similar Folded column. Device names vary by manufacturer, so a major brand may not appear even when it exists — verify at AccessGUDID before concluding a device is absent. Click a column header to sort.';
     results.appendChild(desc);
 
     var card = document.createElement('div');
     card.className = 'glass dev-card';
     var total = devicesResp.data.total;
-    var metaTxt = rows.length + ' records' + (total && total > rows.length ? ' of ' + fmtNum(total) : '');
+    var folded = devicesResp.data.folded_similar || 0;
+    var metaTxt = rows.length + ' records' + (total && total > rows.length ? ' of ' + fmtNum(total) : '') +
+      (folded ? ' · ' + fmtNum(folded) + ' near-identical rows folded into the rows above' : '');
     card.innerHTML = metaRow(metaTxt, 'udi', 'devicera-devices.json');
 
     var wrap = elDiv('dev-table-wrap');

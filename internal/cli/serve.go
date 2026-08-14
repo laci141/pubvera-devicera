@@ -11,11 +11,13 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/laci141/medical-device-intelligence/internal/cliutil"
 	"github.com/laci141/medical-device-intelligence/internal/sources"
@@ -606,12 +608,181 @@ func udiCategorySearch(ctx context.Context, term string, limit int) ([]map[strin
 	return env.Results, env.Meta.Results.Total, nil
 }
 
+// deviceNameNoise are tokens that carry no identity: they differ between the
+// members of one mass registration (sizes, counts, model suffixes) and must not
+// keep near-identical rows in separate groups.
+var deviceNameNoise = regexp.MustCompile(`(?i)^(\d+([.,]\d+)?(mm|cm|ml|mg|g|kg|in|fr|ga|mhz|x)?|[a-z]?\d+[a-z]?|no|size|type|ref|rev|pcs|pack|set)$`)
+
+// normalizeDeviceName reduces a brand name to its identity: lower case, no
+// punctuation or trademark marks, and with the size/model/count tokens above
+// removed. "CANCER 7101" and "Cancer, 25mm" both normalise to "cancer", so one
+// company's whole product line collapses into a single group.
+func normalizeDeviceName(s string) string {
+	var fields []string
+	for _, f := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		if deviceNameNoise.MatchString(f) {
+			continue
+		}
+		fields = append(fields, f)
+	}
+	if len(fields) == 0 {
+		// Nothing but noise: fall back to the squashed original so unrelated
+		// numeric-only names are not all folded onto each other.
+		return strings.Join(strings.Fields(strings.ToLower(s)), " ")
+	}
+	return strings.Join(fields, " ")
+}
+
+// deviceRowScore ranks a merged device row against the query on structural
+// evidence only — no medical judgement, only fields already in the row.
+//
+// The weights, and why each one is what it is:
+//
+//	+4  every word of the query appears in the FDA product category. The
+//	    category is assigned by FDA, not chosen by the registrant, so it is the
+//	    one signal a brand name cannot fake — the strongest evidence available.
+//	    Matching per word, not as a substring, is what lets "insulin pump" score
+//	    "Alternate Controller Enabled Insulin Infusion Pump", which is the
+//	    category the real pumps carry.
+//	+2  some but not all query words appear in the category: partial support.
+//	+3  matched_on == "Both": the record was independently returned by the
+//	    brand-name and the product-category search. Two agreeing legs.
+//	+1  matched_on == "Product category": found by the category leg alone.
+//	+2  the device name contains the query but is more than the query (extra
+//	    tokens), e.g. "MI Cancer Seek" — the word is used descriptively inside a
+//	    real product name, not as the whole brand.
+//	-2  the device name IS the query (after normalisation). An exact brand-name
+//	    equality with a common word is the mass-registration signature
+//	    ("CANCER" microscope slides): weak evidence, so it ranks below anything
+//	    with category support.
+//	+1  Class II or Class III. Higher-risk classes are reviewed device types,
+//	    which correlates with a specific rather than incidental match.
+func deviceRowScore(row map[string]any, query string) int {
+	q := normalizeDeviceName(query)
+	name := normalizeDeviceName(str(row["device_name"]))
+	score := 0
+
+	queryWords := strings.Fields(q)
+	categoryWords := make(map[string]bool)
+	for _, w := range strings.Fields(normalizeDeviceName(str(row["product_category"]))) {
+		categoryWords[w] = true
+	}
+	hits := 0
+	for _, w := range queryWords {
+		if categoryWords[w] {
+			hits++
+		}
+	}
+	switch {
+	case len(queryWords) > 0 && hits == len(queryWords):
+		score += 4
+	case hits > 0:
+		score += 2
+	}
+	switch str(row["matched_on"]) {
+	case "Both":
+		score += 3
+	case "Product category":
+		score++
+	}
+	switch {
+	case q != "" && name == q:
+		score -= 2
+	case q != "" && strings.Contains(name, q):
+		score += 2
+	}
+	switch str(row["device_class"]) {
+	case "Class II", "Class III":
+		score++
+	}
+	return score
+}
+
+// deviceRowDetail counts the populated, informative fields of a row. Used only
+// to choose the representative of a fold group — the richest record wins.
+func deviceRowDetail(row map[string]any) int {
+	n := 0
+	for _, k := range []string{"udi", "device_class", "product_category", "registration_status", "listing_status", "sterilization", "latex", "last_update"} {
+		if str(row[k]) != "" {
+			n++
+		}
+	}
+	return n + len(str(row["device_name"]))/40
+}
+
+// collapseDeviceGroups folds mass registrations: rows sharing a company, an FDA
+// product category and a normalised device name are one product line, and one
+// company's product line must not fill the page. The most informative row of
+// each group is kept and carries similar_folded = how many rows it stands for,
+// so nothing is dropped silently. Rows missing both a company and a name are
+// never grouped. Input order is preserved.
+func collapseDeviceGroups(rows []map[string]any) ([]map[string]any, int) {
+	out := make([]map[string]any, 0, len(rows))
+	index := make(map[string]int, len(rows))
+	folded := 0
+	for _, row := range rows {
+		company := strings.ToLower(strings.TrimSpace(str(row["company"])))
+		name := normalizeDeviceName(str(row["device_name"]))
+		if company == "" && name == "" {
+			out = append(out, row)
+			continue
+		}
+		key := company + "\x00" + strings.ToLower(str(row["product_category"])) + "\x00" + name
+		i, ok := index[key]
+		if !ok {
+			index[key] = len(out)
+			out = append(out, row)
+			continue
+		}
+		folded++
+		kept := out[i]
+		if deviceRowDetail(row) > deviceRowDetail(kept) {
+			// The newcomer is richer: promote it, but keep the group's
+			// accumulated matched_on evidence and its position.
+			if str(kept["matched_on"]) == "Both" {
+				row["matched_on"] = "Both"
+			}
+			out[i], kept = row, row
+		} else if str(row["matched_on"]) == "Both" {
+			kept["matched_on"] = "Both"
+		}
+		n, _ := kept["similar_folded"].(int)
+		kept["similar_folded"] = n + 1
+	}
+	return out, folded
+}
+
+// rankDeviceRows orders the union by deviceRowScore, highest first. The sort is
+// stable, so rows of equal evidence keep their union order (brand-name leg
+// first) and the result stays deterministic.
+func rankDeviceRows(rows []map[string]any, query string) {
+	scores := make(map[int]int, len(rows))
+	for i, row := range rows {
+		scores[i] = deviceRowScore(row, query)
+	}
+	idx := make([]int, len(rows))
+	for i := range idx {
+		idx[i] = i
+	}
+	sort.SliceStable(idx, func(a, b int) bool { return scores[idx[a]] > scores[idx[b]] })
+	sorted := make([]map[string]any, len(rows))
+	for i, j := range idx {
+		sorted[i] = rows[j]
+	}
+	copy(rows, sorted)
+}
+
 // mergeDeviceRows unions the brand-name and product-category result sets,
 // deduplicating by UDI: a row present in both comes out once with matched_on
 // "Both". Rows without a UDI are kept as-is (never collapsed onto each other).
-// Returns the merged rows (capped at max) and the number of duplicates folded,
-// so the caller can report an honest union total.
-func mergeDeviceRows(brand, category []map[string]any, max int) ([]map[string]any, int) {
+// The full union is then collapsed (mass registrations) and ranked against the
+// query BEFORE the cap is applied, so the category leg can never be truncated
+// away by a brand-name leg that happened to arrive first.
+// Returns the rows (capped at max), the number of UDI duplicates folded and
+// the number of near-identical rows folded into a group representative.
+func mergeDeviceRows(brand, category []map[string]any, query string, max int) ([]map[string]any, int, int) {
 	out := make([]map[string]any, 0, len(brand)+len(category))
 	seen := make(map[string]int, len(brand)) // udi -> index in out
 	dups := 0
@@ -634,10 +805,12 @@ func mergeDeviceRows(brand, category []map[string]any, max int) ([]map[string]an
 	}
 	add(brand, "Brand name")
 	add(category, "Product category")
+	out, folded := collapseDeviceGroups(out)
+	rankDeviceRows(out, query)
 	if max > 0 && len(out) > max {
 		out = out[:max]
 	}
-	return out, dups
+	return out, dups, folded
 }
 
 // handleDevices answers /api/devices?device=X with flattened GUDID device
@@ -694,7 +867,7 @@ func handleDevices(w http.ResponseWriter, r *http.Request) {
 	for _, raw := range catRecs {
 		catRows = append(catRows, deviceRow(raw))
 	}
-	rows, dups := mergeDeviceRows(brandRows, catRows, 100)
+	rows, dups, folded := mergeDeviceRows(brandRows, catRows, device, 100)
 
 	resp := map[string]any{
 		"records":        rows,
@@ -702,7 +875,8 @@ func handleDevices(w http.ResponseWriter, r *http.Request) {
 		"total":          brandTotal + catTotal - dups,
 		"total_brand":    brandTotal,
 		"total_category": catTotal,
-		"note":           "GUDID device records via openFDA device/udi; union of a brand-name/UDI-DI search and an FDA product-category search, deduplicated by UDI (total is approximate when the sets overlap beyond the fetched pages); registration data may be incomplete or delayed",
+		"folded_similar": folded,
+		"note":           "GUDID device records via openFDA device/udi; union of a brand-name/UDI-DI search and an FDA product-category search, deduplicated by UDI (total is approximate when the sets overlap beyond the fetched pages); near-identical rows from one company's product line are folded into a single row carrying similar_folded, and rows are ranked by structural relevance before the page is cut; registration data may be incomplete or delayed",
 		"disclaimer":     cliutil.Disclaimer,
 	}
 	var partial []string
