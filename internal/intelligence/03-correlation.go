@@ -152,6 +152,22 @@ func (a *CorrelationAnalyzer) AnalyzeEvidenceGap(ctx context.Context, device str
 	}
 	evidence := trials + pubs
 	per1000 := float64(evidence) / (float64(eventTotal) / 1000.0)
+
+	// evidenceGapPlausibilityLimit: if per-1000 exceeds 200× the saturation
+	// level the search term is almost certainly a medical condition rather than
+	// a device name. Measured: stent=429 (highest device), cancer=3638663
+	// (lowest disease) — an 8500× gap makes 10000 a safe threshold.
+	const evidenceGapPlausibilityLimit = evidenceGapSaturation * 200
+
+	if per1000 > evidenceGapPlausibilityLimit {
+		return noData(SignalEvidenceGap, fmt.Sprintf(
+			"evidence ratio implausibly high (%.0f per 1000 MAUDE events): "+
+				"the search term likely describes a medical condition rather than "+
+				"a device, so PubMed literature and MAUDE event counts measure "+
+				"different things",
+			per1000), src), nil
+	}
+
 	value := math.Max(0, 1-math.Min(1, per1000/evidenceGapSaturation))
 	return &Signal{
 		SignalType: SignalEvidenceGap,

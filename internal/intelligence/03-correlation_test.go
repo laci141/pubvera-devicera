@@ -86,6 +86,25 @@ func TestAnalyzeEvidenceGap(t *testing.T) {
 	if sig.Value != 0 || sig.Label != LabelLow {
 		t.Errorf("rich evidence: got %v/%q want 0/Low", sig.Value, sig.Label)
 	}
+
+	t.Run("implausible ratio returns Unknown", func(t *testing.T) {
+		// A disease-like term: 20M publications against a single MAUDE event.
+		a := NewCorrelationAnalyzer(mockData{
+			eventTypes: map[string]int{"Malfunction": 1},
+			trials:     0,
+			pubs:       20000000,
+		})
+		sig, err := a.AnalyzeEvidenceGap(context.Background(), "cancer")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sig.Label != LabelUnknown {
+			t.Errorf("got %q want Unknown", sig.Label)
+		}
+		if !strings.Contains(sig.Reasoning, "implausibly high") {
+			t.Errorf("reasoning missing %q: %s", "implausibly high", sig.Reasoning)
+		}
+	})
 }
 
 func TestCorrelationNoDataIsGracefulUnknown(t *testing.T) {
