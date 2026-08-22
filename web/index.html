@@ -2424,7 +2424,17 @@
 
   // BibTeX: a medical device is a regulatory record, not an article — every
   // entry is @misc, cited by its UDI when one exists.
-  function bibEsc(v) { return String(v == null ? '' : v).replace(/[{}\\]/g, '').trim(); }
+  // Strip LaTeX structural characters first, then escape special ones.
+  // & % # _ $ -> backslash-prefixed; ^ ~ -> named commands (plain \^ and \~
+  // are accent commands in LaTeX and would silently corrupt the output).
+  function bibEsc(v) {
+    return String(v == null ? '' : v)
+      .replace(/[{}\\]/g, '')
+      .replace(/([&%#_$])/g, '\\$1')
+      .replace(/\^/g, '\\textasciicircum{}')
+      .replace(/~/g, '\\textasciitilde{}')
+      .trim();
+  }
 
   function bibKeyForDevice(r, i) {
     var udi = String(r['UDI'] || '').replace(/[^A-Za-z0-9]/g, '');
