@@ -24,10 +24,17 @@ type Handler func(ctx context.Context, stdout, stderr io.Writer, args []string) 
 var (
 	getSource  = sources.Get
 	allSources = sources.All
-	// synthesize runs Module 12 over the live sources. Tests replace it with a
-	// canned dossier so the signals/dossier commands stay hermetic.
-	synthesize = func(ctx context.Context, device string) (*intelligence.IntelligenceDossier, error) {
+	// runSynthesis is the raw Module 12 run over the live sources.
+	runSynthesis = func(ctx context.Context, device string) (*intelligence.IntelligenceDossier, error) {
 		return intelligence.NewSynthesisAnalyzer(intelligence.NewLiveData()).Synthesize(ctx, device)
+	}
+	// synthesize is what the signals/dossier commands call. It routes through
+	// sharedSynth so the two commands, which serve.go dispatches simultaneously
+	// for one page load, run the eleven-probe suite once between them instead of
+	// twice. Tests replace this whole function with a canned dossier, which also
+	// keeps the group out of their way.
+	synthesize = func(ctx context.Context, device string) (*intelligence.IntelligenceDossier, error) {
+		return sharedSynth.Do(ctx, device, runSynthesis)
 	}
 )
 
