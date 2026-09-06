@@ -25,7 +25,12 @@ type PMIDLookup interface {
 //	esummary.fcgi db=pubmed id=<pmid,...>            -> result.{uids,<pmid>:{...}}
 //
 // Fetch is the two-step esearch -> esummary pipeline. NCBI's keyless etiquette
-// cap is 3 requests/second; one Fetch issues at most 2 sequential requests.
+// cap is 3 requests/second, counted per IP across the whole process — NOT per
+// Fetch. One Fetch issues at most 2 sequential requests, which was safe only
+// while callers arrived one at a time; two concurrent PubMed-touching probes
+// put 4 requests inside one second and NCBI answered 429 (count 4, limit 3).
+// Every request here therefore goes through s.get, which paces them via
+// ncbiGate. Do not call s.client.GetJSON directly.
 type PubMed struct {
 	client *cliutil.Client
 }
@@ -38,6 +43,16 @@ func (s *PubMed) Name() string { return "pubmed" }
 
 // IDField: the PubMed record id, flattened into each record's Raw map.
 func (s *PubMed) IDField() string { return "pmid" }
+
+// get is the single door to NCBI: it waits for this process's next E-utilities
+// slot, then performs the request. Routing every call through one method is
+// what makes the cap hold no matter how many goroutines are in flight.
+func (s *PubMed) get(ctx context.Context, path string, params url.Values) ([]byte, int, error) {
+	if err := ncbiGate.wait(ctx); err != nil {
+		return nil, 0, err
+	}
+	return s.client.GetJSON(ctx, path, params)
+}
 
 // eutilParams carries the shared E-utilities boilerplate.
 func eutilParams() url.Values {
@@ -68,7 +83,7 @@ func (s *PubMed) Fetch(ctx context.Context, q Query) ([]RawRecord, Page, error) 
 	if q.Skip > 0 {
 		params.Set("retstart", strconv.Itoa(q.Skip))
 	}
-	body, _, err := s.client.GetJSON(ctx, "/entrez/eutils/esearch.fcgi", params)
+	body, _, err := s.get(ctx, "/entrez/eutils/esearch.fcgi", params)
 	if err != nil {
 		return nil, Page{}, err
 	}
@@ -117,7 +132,7 @@ func (s *PubMed) LookupPMIDs(ctx context.Context, pmids []string) ([]RawRecord, 
 	}
 	params := eutilParams()
 	params.Set("id", strings.Join(pmids, ","))
-	body, _, err := s.client.GetJSON(ctx, "/entrez/eutils/esummary.fcgi", params)
+	body, _, err := s.get(ctx, "/entrez/eutils/esummary.fcgi", params)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +214,7 @@ func (s *PubMed) PublicationCountWindow(ctx context.Context, term string, fromYe
 	params := eutilParams()
 	params.Set("term", fmt.Sprintf("%s AND %d/01/01:%d/12/31[dp]", searchTerm(term), fromYear, toYear))
 	params.Set("retmax", "0")
-	body, _, err := s.client.GetJSON(ctx, "/entrez/eutils/esearch.fcgi", params)
+	body, _, err := s.get(ctx, "/entrez/eutils/esearch.fcgi", params)
 	if err != nil {
 		return 0, err
 	}
@@ -218,7 +233,7 @@ func (s *PubMed) Health(ctx context.Context) error {
 	params := eutilParams()
 	params.Set("term", "device")
 	params.Set("retmax", "1")
-	_, _, err := s.client.GetJSON(ctx, "/entrez/eutils/esearch.fcgi", params)
+	_, _, err := s.get(ctx, "/entrez/eutils/esearch.fcgi", params)
 	return err
 }
 
