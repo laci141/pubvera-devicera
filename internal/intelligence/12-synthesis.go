@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -33,6 +34,14 @@ type IntelligenceDossier struct {
 }
 
 const indexFormula = "attention_index = mean(value) over readable (non-Unknown) signals; measures public-record attention, NOT risk"
+
+// probeConcurrency bounds how many probes hit the upstream feeds at once.
+// The probes are independent, so the ceiling is politeness to openFDA rather
+// than correctness: the keyless public API is shared by every user of this
+// deployment, and eleven simultaneous request bursts per page load is a poor
+// neighbour. Six keeps the wall-clock close to the unbounded case while
+// leaving headroom. Raise it only with a measurement, not a guess.
+const probeConcurrency = 6
 
 // dossierProbe is one named signal producer in the synthesis run.
 type dossierProbe struct {
@@ -72,6 +81,37 @@ var dataQualityTypes = map[string]bool{
 	SignalMissingEventDates:    true,
 }
 
+// probeResult is one probe's outcome, held until every probe has finished.
+type probeResult struct {
+	sig *Signal
+	err error
+}
+
+// runProbes runs the suite concurrently and returns the results POSITIONALLY,
+// index i holding probe i's outcome regardless of which finished first. The
+// probes are independent — each takes only (ctx, device) and returns its own
+// Signal — so running them together changes timing, not meaning. Writing into
+// a pre-sized slice by index means no goroutine touches another's element and
+// no mutex is needed; the assembly loop below then reads them back in
+// probes() order, which is what keeps the dossier byte-identical between runs.
+func (s *SynthesisAnalyzer) runProbes(ctx context.Context, device string, ps []dossierProbe) []probeResult {
+	out := make([]probeResult, len(ps))
+	sem := make(chan struct{}, probeConcurrency)
+	var wg sync.WaitGroup
+	for i, p := range ps {
+		wg.Add(1)
+		go func(i int, p dossierProbe) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			sig, err := p.run(ctx, device)
+			out[i] = probeResult{sig: sig, err: err}
+		}(i, p)
+	}
+	wg.Wait()
+	return out
+}
+
 // Synthesize runs the suite and assembles the dossier. Individual probe
 // failures become notes (a partial dossier), never a fabricated reading.
 func (s *SynthesisAnalyzer) Synthesize(ctx context.Context, device string) (*IntelligenceDossier, error) {
@@ -86,12 +126,15 @@ func (s *SynthesisAnalyzer) Synthesize(ctx context.Context, device string) (*Int
 	}
 	var readable []scored
 	sum := 0.0
-	for _, p := range s.probes() {
-		sig, err := p.run(ctx, device)
-		if err != nil {
-			d.Notes = append(d.Notes, fmt.Sprintf("%s unavailable: %v", p.name, err))
+	ps := s.probes()
+	results := s.runProbes(ctx, device, ps)
+	for i, p := range ps {
+		res := results[i]
+		if res.err != nil {
+			d.Notes = append(d.Notes, fmt.Sprintf("%s unavailable: %v", p.name, res.err))
 			continue
 		}
+		sig := res.sig
 		d.Signals = append(d.Signals, *sig)
 		if dataQualityTypes[sig.SignalType] {
 			d.DataQuality = append(d.DataQuality, fmt.Sprintf("%s: %s", sig.SignalType, sig.Reasoning))
