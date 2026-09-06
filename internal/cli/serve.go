@@ -155,7 +155,7 @@ func NewServeHandler() http.Handler {
 		}
 		writeJSONError(w, http.StatusNotFound, "not found")
 	})
-	return withRecovery(mux)
+	return withLogging(withRecovery(mux))
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
