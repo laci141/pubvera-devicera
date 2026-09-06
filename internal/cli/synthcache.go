@@ -45,6 +45,41 @@ type synthGroup struct {
 
 var sharedSynth = &synthGroup{entries: make(map[string]*synthEntry)}
 
+// logSynthesis records the outcome of one suite run. A probe that fails does
+// NOT fail the request: Synthesize turns it into a note and the dossier comes
+// back partial with HTTP 200, which is the intended behaviour but also means
+// the request log alone can never show it — every line reads 200. This is the
+// only place the notes are visible, so this is where they are written down.
+//
+// Logged per run, not per request: the group runs the suite once per device per
+// TTL, so the joining request does not produce a duplicate line.
+func logSynthesis(device string, d *intelligence.IntelligenceDossier, err error, took time.Duration) {
+	if err != nil {
+		reqLog.Error("synthesis",
+			"device", clip(device, 80),
+			"duration_ms", took.Milliseconds(),
+			"error", err.Error())
+		return
+	}
+	if d == nil {
+		return
+	}
+	attrs := []any{
+		"device", clip(device, 80),
+		"duration_ms", took.Milliseconds(),
+		"signals_measured", d.SignalsMeasured,
+		"signals_total", len(d.Signals),
+		"probes_failed", len(d.Notes),
+	}
+	// The notes name the probe and carry its error verbatim, e.g.
+	// "benchmark/severity-delta unavailable: ...". They are the answer to
+	// "which of the eleven dropped out, and why".
+	if len(d.Notes) > 0 {
+		attrs = append(attrs, "notes", d.Notes)
+	}
+	reqLog.Info("synthesis", attrs...)
+}
+
 // Do returns the dossier for device, running it at most once per device per
 // TTL. Callers that arrive during a run block on the same entry.
 func (g *synthGroup) Do(ctx context.Context, device string,
@@ -78,11 +113,13 @@ func (g *synthGroup) Do(ctx context.Context, device string,
 		entry := e
 		go func() {
 			defer cancel()
+			start := time.Now()
 			d, err := run(runCtx, device)
 			g.mu.Lock()
 			entry.dossier, entry.err, entry.readyAt = d, err, time.Now()
 			g.mu.Unlock()
 			close(entry.done)
+			logSynthesis(device, d, err, time.Since(start))
 		}()
 	}
 	g.mu.Unlock()
