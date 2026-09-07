@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -28,7 +29,7 @@ type Client struct {
 	BaseURL   string
 	UserAgent string
 	HTTP      *http.Client
-	// Backoff is the pause before the single 5xx retry; small by default.
+	// Backoff is the pause before the first retry; it doubles for the second.
 	Backoff time.Duration
 	// MaxBodyBytes caps the response body. openFDA records are large (a single
 	// device enforcement record is ~66 KB, so a page of 50 is ~3.3 MB and a full
@@ -39,6 +40,19 @@ type Client struct {
 }
 
 const defaultMaxBodyBytes = 128 << 20 // 128 MiB — comfortably fits a full openFDA page
+
+// maxAttempts is the total number of tries, i.e. two retries after the first
+// attempt. Three, not two, because both upstreams were measured failing
+// transiently in one session: NCBI answered a keyless burst with 429 and, on a
+// different run, served its own eutils102 error page as a 500. A single retry
+// after 300ms was not enough for the 500 — it failed twice in a row.
+const maxAttempts = 3
+
+// maxRetryAfter caps how long a Retry-After header can hold a request. A
+// dossier probe is one of eleven running under a 90s ceiling; obeying a
+// multi-minute value would cost more than the signal is worth, so past this we
+// give up and report the error rather than stall the run.
+const maxRetryAfter = 5 * time.Second
 
 // NewClient returns a Client with sane keyless defaults.
 func NewClient(baseURL string) *Client {
@@ -51,12 +65,47 @@ func NewClient(baseURL string) *Client {
 	}
 }
 
+// retryable reports whether a status is worth trying again. 5xx is the upstream
+// having a bad moment. 429 is a rate limit — the one 4xx where waiting is
+// exactly the right answer, and the reason this is not simply "4xx never
+// retries" any more.
+func retryable(status int) bool {
+	return status >= 500 || status == http.StatusTooManyRequests
+}
+
+// retryDelay is how long to wait before the next attempt: the server's own
+// Retry-After when it sends one (it knows its window better than we do),
+// otherwise our doubling backoff. Only the integer-seconds form is read; the
+// HTTP-date form is rare here and not worth the parsing surface.
+func (c *Client) retryDelay(resp *http.Response, attempt int) (time.Duration, bool) {
+	if resp != nil {
+		if v := strings.TrimSpace(resp.Header.Get("Retry-After")); v != "" {
+			if secs, err := strconv.Atoi(v); err == nil && secs >= 0 {
+				d := time.Duration(secs) * time.Second
+				if d > maxRetryAfter {
+					return 0, false // too long to be worth waiting for
+				}
+				return d, true
+			}
+		}
+	}
+	// attempt is 0-based: 300ms before the first retry, 600ms before the second.
+	return c.Backoff << attempt, true
+}
+
 // GetJSON issues GET BaseURL+path?params and returns the raw body and status.
 //
-// Retry policy (guardrail 6): retry exactly once, only on a 5xx, after a short
-// backoff. A 4xx is returned immediately — never retried. Any non-2xx yields an
-// *APIError carrying a ~200-byte body snippet. A 404 is returned as an
-// *APIError with StatusCode 404 so the caller can treat it as "no records".
+// Retry policy (guardrail 6, revised 2026-09-06): up to three attempts, on a
+// 5xx OR a 429, with a doubling backoff and Retry-After honoured when the
+// server sends one. Every other 4xx is returned immediately — never retried,
+// because waiting does not turn a malformed query into a good one. Any non-2xx
+// yields an *APIError carrying a ~200-byte body snippet. A 404 is returned as
+// an *APIError with StatusCode 404 so the caller can treat it as "no records".
+//
+// The original rule was one retry, 5xx only. It was written when the dossier
+// ran its probes one at a time; concurrent probes made 429 a real outcome
+// rather than a theoretical one, and a measured NCBI 500 survived the single
+// retry. Both changes come from observed failures, not from caution.
 func (c *Client) GetJSON(ctx context.Context, path string, params url.Values) ([]byte, int, error) {
 	u := c.BaseURL + path
 	if len(params) > 0 {
@@ -66,12 +115,14 @@ func (c *Client) GetJSON(ctx context.Context, path string, params url.Values) ([
 	}
 
 	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
-		if attempt == 1 {
+	// delay is set by the previous attempt; zero means go straight on.
+	var delay time.Duration
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if delay > 0 {
 			select {
 			case <-ctx.Done():
 				return nil, 0, ctx.Err()
-			case <-time.After(c.Backoff):
+			case <-time.After(delay):
 			}
 		}
 
@@ -85,7 +136,8 @@ func (c *Client) GetJSON(ctx context.Context, path string, params url.Values) ([
 		resp, err := c.HTTP.Do(req)
 		if err != nil {
 			lastErr = err
-			continue // transport error — allow the single retry
+			delay, _ = c.retryDelay(nil, attempt)
+			continue // transport error — allow a retry
 		}
 		max := c.MaxBodyBytes
 		if max <= 0 {
@@ -106,10 +158,17 @@ func (c *Client) GetJSON(ctx context.Context, path string, params url.Values) ([
 		switch {
 		case resp.StatusCode >= 200 && resp.StatusCode < 300:
 			return body, resp.StatusCode, nil
-		case resp.StatusCode >= 500:
-			lastErr = &APIError{StatusCode: resp.StatusCode, Snippet: snippet(body), URL: u}
-			continue // retry once on 5xx
-		default: // 4xx (incl. 404) — return immediately, never retried
+		case retryable(resp.StatusCode):
+			apiErr := &APIError{StatusCode: resp.StatusCode, Snippet: snippet(body), URL: u}
+			lastErr = apiErr
+			d, ok := c.retryDelay(resp, attempt)
+			if !ok {
+				// The server asked for longer than we are willing to wait.
+				return body, resp.StatusCode, apiErr
+			}
+			delay = d
+			continue
+		default: // other 4xx (incl. 404) — return immediately, never retried
 			return body, resp.StatusCode, &APIError{StatusCode: resp.StatusCode, Snippet: snippet(body), URL: u}
 		}
 	}
