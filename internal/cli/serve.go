@@ -40,6 +40,28 @@ var getenv = os.Getenv
 // envelope shape, the disclaimer, and the never-a-risk-score conventions are
 // inherited rather than re-implemented. On Render-style platforms the PORT
 // environment variable, when set, overrides --port.
+// Server-side timeouts. ReadHeaderTimeout was the only one set, which left the
+// request BODY with no deadline at all: a size limit is not a time limit, and a
+// client that sends its body one byte per minute holds a handler goroutine for
+// as long as it likes. Caddy fronts this app in production and sets no request
+// timeout of its own, so this is the only place the limit exists.
+//
+// WriteTimeout is the one that must not be guessed. The slowest response is a
+// dossier synthesis: the handler waits on the shared run, and that run is
+// bounded by synthRunLimit, so the response cannot outlast it by more than the
+// time to write the result. Deriving it here means a change to synthRunLimit
+// carries over instead of silently leaving this too short.
+const (
+	srvReadHeaderTimeout = 10 * time.Second
+	// Request bodies here are small JSON objects. Thirty seconds is far more
+	// than a real client needs and far less than a slow-loris attacker wants.
+	srvReadTimeout = 30 * time.Second
+	// The full synthesis budget plus room to write the response.
+	srvWriteTimeout = synthRunLimit + 30*time.Second
+	// Keep-alive connections that go quiet are released rather than held.
+	srvIdleTimeout = 120 * time.Second
+)
+
 func cmdServe(ctx context.Context, stdout, stderr io.Writer, args []string) int {
 	fs, _ := newFlagSet("serve")
 	port := fs.Int("port", 8080, "listen port (PORT env, when set, wins)")
@@ -64,7 +86,10 @@ func cmdServe(ctx context.Context, stdout, stderr io.Writer, args []string) int 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", p),
 		Handler:           NewServeHandler(),
-		ReadHeaderTimeout: 10 * time.Second,
+		ReadHeaderTimeout: srvReadHeaderTimeout,
+		ReadTimeout:       srvReadTimeout,
+		WriteTimeout:      srvWriteTimeout,
+		IdleTimeout:       srvIdleTimeout,
 		BaseContext:       func(net.Listener) context.Context { return ctx },
 	}
 
