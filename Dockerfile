@@ -15,5 +15,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /app/mdi .
-# Render provides the PORT env variable; the serve command reads it.
+# The serve command listens on every interface, on $PORT when it is set and
+# on 8080 otherwise. On the Hetzner box (pubvera-01) docker-compose.yml sets
+# PORT=8092 and publishes it only on the host's 127.0.0.1:8092, behind Caddy.
+# This comment used to say Render provides PORT; that was true before the move.
 CMD ["./mdi", "serve"]
