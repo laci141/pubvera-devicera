@@ -9,7 +9,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build -o mdi ./cmd/medical-device-intelligence-pp-cli
 
 # Stage 2: minimal runtime
-FROM debian:stable-slim
+FROM debian:trixie-slim
 # CA certificates for the HTTPS API calls (openFDA, ClinicalTrials.gov, PubMed).
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
