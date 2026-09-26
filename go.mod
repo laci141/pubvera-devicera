@@ -2,7 +2,7 @@ module github.com/laci141/medical-device-intelligence
 
 go 1.26
 
-toolchain go1.26.4
+toolchain go1.26.8
 
 // The only non-stdlib dependency: a CGo-free SQLite driver. Pure Go, so the
 // "no cgo / no exec.Command" constraint holds. SQLite cannot be done in the
