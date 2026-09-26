@@ -27,25 +27,25 @@ type Device struct {
 
 // UDI is a GUDID device-identifier profile.
 type UDI struct {
-	UDIDI         string    `json:"udi_di"`
-	DeviceKey     string    `json:"device_key"`
-	Manufacturer  string    `json:"manufacturer,omitempty"`
-	Model         string    `json:"model,omitempty"`
-	CommercialName string   `json:"commercial_name,omitempty"`
-	Source        SourceRef `json:"source"`
+	UDIDI          string    `json:"udi_di"`
+	DeviceKey      string    `json:"device_key"`
+	Manufacturer   string    `json:"manufacturer,omitempty"`
+	Model          string    `json:"model,omitempty"`
+	CommercialName string    `json:"commercial_name,omitempty"`
+	Source         SourceRef `json:"source"`
 }
 
 // Recall is an openFDA device recall/enforcement record.
 type Recall struct {
-	RecallNumber        string    `json:"recall_number"`
-	DeviceKey           string    `json:"device_key,omitempty"`
-	Classification      string    `json:"classification,omitempty"`
-	RecallingFirm       string    `json:"recalling_firm,omitempty"`
-	ProductDescription  string    `json:"product_description,omitempty"`
-	ReasonForRecall     string    `json:"reason_for_recall,omitempty"`
-	RecallInitiationDate string   `json:"recall_initiation_date,omitempty"`
-	Status              string    `json:"status,omitempty"`
-	Source              SourceRef `json:"source"`
+	RecallNumber         string    `json:"recall_number"`
+	DeviceKey            string    `json:"device_key,omitempty"`
+	Classification       string    `json:"classification,omitempty"`
+	RecallingFirm        string    `json:"recalling_firm,omitempty"`
+	ProductDescription   string    `json:"product_description,omitempty"`
+	ReasonForRecall      string    `json:"reason_for_recall,omitempty"`
+	RecallInitiationDate string    `json:"recall_initiation_date,omitempty"`
+	Status               string    `json:"status,omitempty"`
+	Source               SourceRef `json:"source"`
 }
 
 // Event is a MAUDE adverse-event record (aggregate-friendly).
@@ -60,13 +60,13 @@ type Event struct {
 
 // Trial is a ClinicalTrials.gov study.
 type Trial struct {
-	TrialID    string    `json:"trial_id"` // NCT id
-	DeviceKey  string    `json:"device_key,omitempty"`
-	Phase      string    `json:"phase,omitempty"`
-	Status     string    `json:"status,omitempty"`
-	Condition  string    `json:"condition,omitempty"`
-	Intervention string  `json:"intervention,omitempty"`
-	Source     SourceRef `json:"source"`
+	TrialID      string    `json:"trial_id"` // NCT id
+	DeviceKey    string    `json:"device_key,omitempty"`
+	Phase        string    `json:"phase,omitempty"`
+	Status       string    `json:"status,omitempty"`
+	Condition    string    `json:"condition,omitempty"`
+	Intervention string    `json:"intervention,omitempty"`
+	Source       SourceRef `json:"source"`
 }
 
 // Publication is a PubMed/OpenAlex/Crossref record.

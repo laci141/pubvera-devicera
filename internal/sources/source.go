@@ -48,8 +48,8 @@ type FieldCounter interface {
 
 // RawRecord is one provider record: the raw JSON plus the extracted primary key.
 type RawRecord struct {
-	ID  string          // the provider's own record id
-	Raw map[string]any  // decoded JSON object
+	ID  string         // the provider's own record id
+	Raw map[string]any // decoded JSON object
 }
 
 // Page carries pagination state returned alongside a fetch.
