@@ -55,7 +55,7 @@ func (a *ClusterAnalyzer) FindSimilarDevices(ctx context.Context, device string,
 	}
 
 	deviceLower := strings.ToLower(device)
-	hits := map[string]int{}   // candidate -> number of seed terms it appears under
+	hits := map[string]int{} // candidate -> number of seed terms it appears under
 	var order []string
 	for _, term := range seeds {
 		names, err := a.data.DevicesForCondition(ctx, term, 20)

@@ -12,22 +12,22 @@ import (
 
 // mockData is a canned read-only Data view.
 type mockData struct {
-	eventTypes    map[string]int
-	recalls       int
-	windows       map[string]int            // keyed by "from-to"
-	typeWindows   map[string]map[string]int // keyed by "from-to"
-	p95           int
-	sample        int
-	recallClasses map[string]int
-	trials        int
-	pubs          int
-	recallActions []ComplianceAction
-	firmClasses   map[string]int
-	firmStatuses  map[string]int
-	firmWindows   map[string]int // keyed by "from-to"
-	typeVolumes   map[string]int
-	globalTypes   map[string]int
-	globalClasses map[string]int
+	eventTypes     map[string]int
+	recalls        int
+	windows        map[string]int            // keyed by "from-to"
+	typeWindows    map[string]map[string]int // keyed by "from-to"
+	p95            int
+	sample         int
+	recallClasses  map[string]int
+	trials         int
+	pubs           int
+	recallActions  []ComplianceAction
+	firmClasses    map[string]int
+	firmStatuses   map[string]int
+	firmWindows    map[string]int // keyed by "from-to"
+	typeVolumes    map[string]int
+	globalTypes    map[string]int
+	globalClasses  map[string]int
 	meshTerms      []string
 	condDevices    map[string][]string       // condition -> intervention names
 	deviceWindows  map[string]map[string]int // device -> "from-to" -> total
