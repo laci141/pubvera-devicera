@@ -145,8 +145,11 @@ func (c *Client) GetJSON(ctx context.Context, path string, params url.Values) ([
 		}
 		// Read one byte past the cap so we can detect (rather than silently
 		// swallow) a body that exceeds it.
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, max+1))
+		body, err := io.ReadAll(io.LimitReader(resp.Body, max+1))
 		resp.Body.Close()
+		if err != nil {
+			return nil, resp.StatusCode, fmt.Errorf("read response body from %s: %w", u, err)
+		}
 		if int64(len(body)) > max {
 			return nil, resp.StatusCode, &APIError{
 				StatusCode: resp.StatusCode,

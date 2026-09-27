@@ -46,8 +46,11 @@ func (s *Store) UpsertRegulatoryAction(agency, sourceID, jurisdiction, deviceID,
 	if sourceID == "" || agency == "" {
 		return ErrEmptyID
 	}
-	b, _ := json.Marshal(raw)
-	_, err := s.db.Exec(`
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return fmt.Errorf("marshal raw for %s/%s: %w", agency, sourceID, err)
+	}
+	_, err = s.db.Exec(`
 		INSERT INTO regulatory_actions
 		    (source_id, agency, jurisdiction, device_id, action_type, status, date, url, raw, fetched_at)
 		VALUES (?,?,?,?,?,?,?,?,?,?)
