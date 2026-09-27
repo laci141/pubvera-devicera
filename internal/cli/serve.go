@@ -282,7 +282,10 @@ func withRecovery(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("internal error: %v", rec))
+				// The panic value can carry paths, SQL, or upstream payloads: log it
+				// server-side, send the client only a generic message.
+				reqLog.Error("panic", "path", r.URL.Path, "panic", fmt.Sprint(rec))
+				writeJSONError(w, http.StatusInternalServerError, "internal error")
 			}
 		}()
 		next.ServeHTTP(w, r)
@@ -341,11 +344,18 @@ var luCache struct {
 // freshness header doesn't cost an extra upstream round-trip per request.
 func lastUpdatedCached(ctx context.Context) string {
 	luCache.mu.Lock()
-	defer luCache.mu.Unlock()
 	if luCache.val != "" && time.Since(luCache.at) < time.Hour {
-		return luCache.val
+		v := luCache.val
+		luCache.mu.Unlock()
+		return v
 	}
-	if v := fetchOpenFDALastUpdated(ctx); v != "" {
+	luCache.mu.Unlock()
+	// Fetch without the lock so one slow upstream call doesn't serialize every
+	// request; duplicate fetches on a cold cache are harmless.
+	v := fetchOpenFDALastUpdated(ctx)
+	luCache.mu.Lock()
+	defer luCache.mu.Unlock()
+	if v != "" {
 		luCache.val, luCache.at = v, time.Now()
 	}
 	return luCache.val

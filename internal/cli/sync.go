@@ -36,7 +36,7 @@ func cmdSync(ctx context.Context, stdout, stderr io.Writer, args []string) int {
 		return 2
 	}
 	if *since != "" && !validSince(*since) {
-		fmt.Fprintln(stderr, "sync: --since must be a compact date, e.g. 20250101")
+		fmt.Fprintln(stderr, "sync: --since must be a valid calendar date in YYYYMMDD form, e.g. 20250101")
 		return 2
 	}
 	device := fs.Arg(0)

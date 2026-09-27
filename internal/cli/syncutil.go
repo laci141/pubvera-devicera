@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/laci141/medical-device-intelligence/internal/sources"
 	"github.com/laci141/medical-device-intelligence/internal/store"
@@ -133,17 +134,14 @@ func syncPass(ctx context.Context, stderr io.Writer, st *store.Store, device, si
 	return res, nil
 }
 
-// validSince reports whether s is a compact YYYYMMDD date.
+// validSince reports whether s is a real calendar date in compact YYYYMMDD
+// form; impossible dates such as 20261399 or 20260230 are rejected.
 func validSince(s string) bool {
 	if len(s) != 8 {
 		return false
 	}
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return true
+	_, err := time.Parse("20060102", s)
+	return err == nil
 }
 
 // rfc3339ToCompact converts "2026-07-09T..." to "20260709".
