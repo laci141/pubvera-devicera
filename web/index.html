@@ -2361,6 +2361,7 @@
   function downloadXLSX(key, filename) {
     var rows = rowsFromLastData(key);
     if (!rows || !rows.length) { alert('Run a search first.'); return; }
+    if (typeof XLSX === 'undefined' || !XLSX || !XLSX.utils) { alert('Excel export is unavailable right now (the spreadsheet library did not load). Please use CSV or JSON instead.'); return; }
     var cols = [];
     rows.forEach(function (r) { Object.keys(r || {}).forEach(function (k) { if (cols.indexOf(k) === -1) cols.push(k); }); });
     // Row 0 is the provenance title (incl. active filters), row 1 the header.
