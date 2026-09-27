@@ -260,7 +260,10 @@ func routeHandler(route apiRoute) http.HandlerFunc {
 		case 2:
 			writeJSONError(w, http.StatusBadRequest, firstLine(errBuf.String()))
 		default:
-			writeJSONError(w, http.StatusBadGateway, firstLine(errBuf.String()))
+			// Runtime/upstream stderr can carry URLs, keys, or payloads: log it
+			// server-side, send the client only a generic message.
+			reqLog.Error("upstream", "path", r.URL.Path, "err", firstLine(errBuf.String()))
+			writeJSONError(w, http.StatusBadGateway, "upstream data source failed")
 		}
 	}
 }
@@ -461,7 +464,8 @@ func handleFailureModes(w http.ResponseWriter, r *http.Request) {
 	}
 	counts, err := counter.CountField(r.Context(), sources.Query{Term: device}, "product_problems.exact")
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, err.Error())
+		reqLog.Error("upstream", "path", r.URL.Path, "err", err.Error())
+		writeJSONError(w, http.StatusBadGateway, "upstream data source failed")
 		return
 	}
 	type problem struct {

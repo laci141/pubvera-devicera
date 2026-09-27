@@ -3,9 +3,11 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -154,6 +156,51 @@ func TestAuditBUG09SinceRejectsImpossibleDates(t *testing.T) {
 	} {
 		if got := validSince(c.in); got != c.ok {
 			t.Errorf("validSince(%q) = %v, want %v", c.in, got, c.ok)
+		}
+	}
+}
+
+// failingCounter is an event source whose field count fails with err.
+type failingCounter struct{ fakeSource }
+
+func (f failingCounter) CountField(context.Context, sources.Query, string) (map[string]int, error) {
+	return nil, f.err
+}
+
+// TestAuditUpstreamErrorNotLeaked: an upstream failure keeps its 502 status,
+// but the raw error text stays in the server log and never reaches the client.
+func TestAuditUpstreamErrorNotLeaked(t *testing.T) {
+	const marker = "SECRET-UPSTREAM-MARKER-9c1d https://internal.example/key=abc"
+	var logBuf bytes.Buffer
+	orig := reqLog
+	reqLog = slog.New(slog.NewJSONHandler(&logBuf, nil))
+	defer func() { reqLog = orig }()
+
+	fail := fakeSource{name: "openfda_device_event", id: "report_number", err: errors.New(marker)}
+	withSources(t, map[string]sources.Source{"openfda_device_event": failingCounter{fail}})
+
+	// The API routes degrade gracefully on source errors, so the exit-1 branch
+	// of routeHandler is driven with a command that fails hard (adverse).
+	adverse := withLogging(routeHandler(apiRoute{
+		params: []string{"device"},
+		argv:   func(q url.Values) []string { return []string{"adverse", q.Get("device"), "--json"} },
+	}))
+	handlers := map[string]http.Handler{
+		"/api/failure-modes?device=x": NewServeHandler(),
+		"/api/adverse?device=x":       adverse,
+	}
+	for path, h := range handlers {
+		logBuf.Reset()
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+		if rr.Code != http.StatusBadGateway {
+			t.Errorf("%s: status = %d, want 502; body=%s", path, rr.Code, rr.Body.String())
+		}
+		if strings.Contains(rr.Body.String(), "SECRET-UPSTREAM-MARKER") {
+			t.Errorf("%s: upstream error leaked to client: %s", path, rr.Body.String())
+		}
+		if !strings.Contains(logBuf.String(), "SECRET-UPSTREAM-MARKER") {
+			t.Errorf("%s: upstream error not logged server-side: %s", path, logBuf.String())
 		}
 	}
 }
