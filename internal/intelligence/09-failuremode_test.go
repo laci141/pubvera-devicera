@@ -33,7 +33,7 @@ func TestProblemConcentrationSingleModeIsCritical(t *testing.T) {
 	if sig.Value != 1.0 || sig.Label != LabelCritical {
 		t.Errorf("single mode: got %v/%q want 1.0/Critical", sig.Value, sig.Label)
 	}
-	for _, want := range []string{"Herfindahl 1.00", "Battery Issue (100%)", "labeling pattern"} {
+	for _, want := range []string{"concentration 1.00 across the top 1 reported problem terms", "Battery Issue (100%)", "labeling pattern"} {
 		if !strings.Contains(sig.Reasoning, want) {
 			t.Errorf("reasoning missing %q: %s", want, sig.Reasoning)
 		}

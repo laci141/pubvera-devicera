@@ -158,7 +158,7 @@ func (a *ReportingAnalyzer) AnalyzeMakerConcentration(ctx context.Context, devic
 		Value:      round2(hhi),
 		Label:      labelFor(hhi),
 		Reasoning: fmt.Sprintf(
-			"Herfindahl %.2f across %d reporting manufacturers (%d name-attributed reports; counted head, casing merged); top: %s; high concentration means term-level readings describe one maker's product line",
+			"concentration %.2f across the top %d reporting manufacturers (sum of squared shares; %d name-attributed reports in the counted head, not the full distribution; casing merged); top: %s; high concentration means term-level readings describe one maker's product line",
 			hhi, len(merged), total, strings.Join(names, ", ")),
 		ConfidenceLevel: confidenceForSample(total),
 		SourceType:      src,

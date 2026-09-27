@@ -94,7 +94,7 @@ func (a *FailureModeAnalyzer) AnalyzeProblemConcentration(ctx context.Context, d
 		Value:      round2(hhi),
 		Label:      labelFor(hhi),
 		Reasoning: fmt.Sprintf(
-			"Herfindahl %.2f across %d problem terms (%d reports in the counted head); top: %s; problems are reporter-selected labels — concentration is a labeling pattern as much as an engineering fact",
+			"concentration %.2f across the top %d reported problem terms (sum of squared shares; %d reports in the counted head, not the full distribution); top: %s; problems are reporter-selected labels — concentration is a labeling pattern as much as an engineering fact",
 			hhi, len(counts), total, strings.Join(names, ", ")),
 		ConfidenceLevel: confidenceForSample(total),
 		SourceType:      src,
