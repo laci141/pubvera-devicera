@@ -71,7 +71,7 @@ func (a *ComplianceAnalyzer) CheckFDAStatus(ctx context.Context, device string) 
 			Status:          StatusOK,
 			Actions:         nil,
 			Severity:        0,
-			Reasoning:       "no recalls in the openFDA enforcement record for this device term; warning letters and approvals are not in the wired feeds, and absence of records is not evidence of safety",
+			Reasoning:       "OK (Devicera rule over FDA recall records — not an FDA status or determination): 0 Class I, 0 Class II, 0 Class III recall records in the openFDA enforcement record for this device term; warning letters and approvals are not in the wired feeds, and absence of records is not evidence of safety",
 			ConfidenceLevel: ConfidenceLow,
 			SourceType:      src,
 		}, nil
@@ -99,7 +99,7 @@ func (a *ComplianceAnalyzer) CheckFDAStatus(ctx context.Context, device string) 
 		LastAction: last,
 		Severity:   round2(severity),
 		Reasoning: fmt.Sprintf(
-			"%s: %d recalls on record (%d Class I, %d Class II, %d Class III); severity is the weighted class mix (I=1.0, II=0.5, III=0.2); thresholds: CRITICAL=3+ Class I or Class I among 20+, RECALL=any Class I/II, WARNING=Class III only; recall feed only — warning letters/approvals not wired",
+			"%s (Devicera rule over FDA recall records — not an FDA status or determination): %d recall records (%d Class I, %d Class II, %d Class III); severity is the weighted class mix (I=1.0, II=0.5, III=0.2); rule: CRITICAL=3+ Class I recall records or any Class I among 20+ total, RECALL=any Class I/II recall record, WARNING=Class III recall records only, OK=none; recall feed only — warning letters/approvals not wired",
 			status, total, c1, c2, c3),
 		ConfidenceLevel: confidenceForSample(total),
 		SourceType:      src,

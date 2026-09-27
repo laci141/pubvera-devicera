@@ -2,6 +2,7 @@ package intelligence
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -215,5 +216,31 @@ func TestBUG01_NewProblemModesWindowExactDays(t *testing.T) {
 	}
 	if !parseDay(t, history[1]).AddDate(0, 0, 1).Equal(parseDay(t, recent[0])) {
 		t.Errorf("history ends %s, recent starts %s: not contiguous", history[1], recent[0])
+	}
+}
+
+// DESIGN-03: CRITICAL is a Devicera rule over FDA recall records. The JSON
+// value stays "CRITICAL" (API contract) but the reasoning must say it is not
+// an FDA status.
+func TestComplianceCriticalIsLabelledDeviceraRule(t *testing.T) {
+	a := NewComplianceAnalyzer(mockData{
+		recallClasses: map[string]int{"Class I": 4},
+		recallActions: []ComplianceAction{act("20250301", "Class I", "Z-9")},
+	})
+	st, err := a.CheckFDAStatus(context.Background(), "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"status":"CRITICAL"`) {
+		t.Errorf("JSON status changed: %s", raw)
+	}
+	for _, want := range []string{"Devicera rule", "not an FDA status", "4 Class I"} {
+		if !strings.Contains(st.Reasoning, want) {
+			t.Errorf("reasoning missing %q: %s", want, st.Reasoning)
+		}
 	}
 }
