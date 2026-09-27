@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -46,7 +47,11 @@ func (s *Store) UpsertRecords(recs []Record, batch int) (int, error) {
 				tx.Rollback()
 				return 0, ErrEmptyID
 			}
-			b, _ := json.Marshal(r.Raw)
+			b, err := json.Marshal(r.Raw)
+			if err != nil {
+				tx.Rollback()
+				return 0, fmt.Errorf("marshal raw for %s/%s: %w", r.Source, r.ID, err)
+			}
 			if _, err := tx.Exec(`
 				INSERT INTO records (source, record_id, term, date, summary, raw, fetched_at)
 				VALUES (?,?,?,?,?,?,?)
