@@ -35,7 +35,7 @@ func (a *AnomalyAnalyzer) DetectSurge(ctx context.Context, device string, recent
 		return nil, fmt.Errorf("surge: need recentDays >= 1 and baselineDays >= recentDays (got %d, %d)", recentDays, baselineDays)
 	}
 	now := timeNow().UTC()
-	mid := now.AddDate(0, 0, -recentDays)
+	mid := now.AddDate(0, 0, -recentDays+1) // inclusive [mid, now] = recentDays days
 	old := mid.AddDate(0, 0, -baselineDays)
 	src := []string{"openfda_maude"}
 
@@ -84,7 +84,7 @@ func (a *AnomalyAnalyzer) DetectNewPattern(ctx context.Context, device string, r
 		return nil, fmt.Errorf("new-pattern: recentDays must be >= 1 (got %d)", recentDays)
 	}
 	now := timeNow().UTC()
-	mid := now.AddDate(0, 0, -recentDays)
+	mid := now.AddDate(0, 0, -recentDays+1) // inclusive [mid, now] = recentDays days
 	src := []string{"openfda_maude"}
 
 	recent, err := a.data.EventTypeCountsWindow(ctx, device, mid.Format(day), now.Format(day))

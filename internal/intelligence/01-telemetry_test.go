@@ -196,8 +196,8 @@ func TestAnalyzeTrendSurge(t *testing.T) {
 	t.Cleanup(func() { timeNow = old })
 
 	a := NewTelemetryAnalyzer(mockData{windows: map[string]int{
-		"20260609-20260709": 50, // recent 30 days
-		"20260510-20260608": 10, // prior 30 days
+		"20260610-20260709": 50, // recent 30 days
+		"20260511-20260609": 10, // prior 30 days
 	}})
 	sig, err := a.AnalyzeTrend(context.Background(), "pacemaker", 30)
 	if err != nil {
@@ -225,8 +225,8 @@ func TestAnalyzeTrendDeclineReadsLow(t *testing.T) {
 	t.Cleanup(func() { timeNow = old })
 
 	a := NewTelemetryAnalyzer(mockData{windows: map[string]int{
-		"20260609-20260709": 5,
-		"20260510-20260608": 10,
+		"20260610-20260709": 5,
+		"20260511-20260609": 10,
 	}})
 	sig, err := a.AnalyzeTrend(context.Background(), "x", 30)
 	if err != nil {
@@ -245,7 +245,7 @@ func TestAnalyzeTrendNewSignalNoBaseline(t *testing.T) {
 	timeNow = func() time.Time { return time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC) }
 	t.Cleanup(func() { timeNow = old })
 
-	a := NewTelemetryAnalyzer(mockData{windows: map[string]int{"20260609-20260709": 7}})
+	a := NewTelemetryAnalyzer(mockData{windows: map[string]int{"20260610-20260709": 7}})
 	sig, err := a.AnalyzeTrend(context.Background(), "x", 30)
 	if err != nil {
 		t.Fatal(err)

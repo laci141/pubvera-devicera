@@ -109,7 +109,7 @@ func (a *FailureModeAnalyzer) AnalyzeNewProblemModes(ctx context.Context, device
 		return nil, fmt.Errorf("new-modes: recentDays must be >= 1 (got %d)", recentDays)
 	}
 	now := timeNow().UTC()
-	mid := now.AddDate(0, 0, -recentDays)
+	mid := now.AddDate(0, 0, -recentDays+1) // inclusive [mid, now] = recentDays days
 	src := []string{"openfda_maude"}
 
 	recent, err := a.data.ProblemCountsWindow(ctx, device, mid.Format(day), now.Format(day))

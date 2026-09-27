@@ -123,8 +123,8 @@ func (a *ClusterAnalyzer) AnalyzeClusterRisk(ctx context.Context, device string)
 	}
 
 	now := timeNow().UTC()
-	mid := now.AddDate(0, 0, -365)
-	old := now.AddDate(0, 0, -730)
+	mid := now.AddDate(0, 0, -364) // inclusive [mid, now] = 365 days
+	old := mid.AddDate(0, 0, -365)
 	members := append([]string{device}, cluster.SimilarDevices...)
 	rising, measured := 0, 0
 	sumSlope := 0.0

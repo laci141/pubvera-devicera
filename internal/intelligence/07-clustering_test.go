@@ -89,8 +89,8 @@ func TestClusterLargeCapsAtTopN(t *testing.T) {
 func TestClusterRiskSharedRise(t *testing.T) {
 	pinClock(t)
 	now := timeNow().UTC()
-	mid := now.AddDate(0, 0, -365)
-	old := now.AddDate(0, 0, -730)
+	mid := now.AddDate(0, 0, -364)
+	old := mid.AddDate(0, 0, -365)
 	recentKey := mid.Format(day) + "-" + now.Format(day)
 	priorKey := old.Format(day) + "-" + mid.AddDate(0, 0, -1).Format(day)
 

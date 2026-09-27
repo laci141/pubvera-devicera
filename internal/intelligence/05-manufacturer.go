@@ -57,8 +57,8 @@ func (a *ManufacturerAnalyzer) AnalyzeRecallTrend(ctx context.Context, firm stri
 		return nil, fmt.Errorf("firm-trend: periodDays must be >= 1 (got %d)", periodDays)
 	}
 	now := timeNow().UTC()
-	mid := now.AddDate(0, 0, -periodDays)
-	old := now.AddDate(0, 0, -2*periodDays)
+	mid := now.AddDate(0, 0, -periodDays+1) // inclusive [mid, now] = periodDays days
+	old := mid.AddDate(0, 0, -periodDays)
 	src := []string{"openfda_recall"}
 
 	recent, err := a.data.FirmRecallTotalWindow(ctx, firm, mid.Format(day), now.Format(day))

@@ -60,9 +60,10 @@ func (a *TelemetryAnalyzer) AnalyzeSeverity(ctx context.Context, device string) 
 	}, nil
 }
 
-// AnalyzeVolume compares the device's total public record volume (MAUDE
-// events + recalls) against the p95 event volume of the most-reported device
-// types. Value = volume / p95, capped at 1.0.
+// AnalyzeVolume compares the device's MAUDE event volume against the p95
+// event volume of the most-reported device types. Value = events / p95,
+// capped at 1.0. The baseline counts MAUDE events only, so recalls are kept
+// out of the numerator and reported separately.
 func (a *TelemetryAnalyzer) AnalyzeVolume(ctx context.Context, device string) (*Signal, error) {
 	counts, err := a.data.EventTypeCounts(ctx, device)
 	if err != nil {
@@ -77,9 +78,9 @@ func (a *TelemetryAnalyzer) AnalyzeVolume(ctx context.Context, device string) (*
 		return nil, fmt.Errorf("volume: recalls: %w", err)
 	}
 	src := []string{"openfda_maude", "openfda_recall"}
-	volume := events + recalls
+	volume := events
 	if volume == 0 {
-		return noData(SignalVolume, "no MAUDE reports or recalls found for this device term", src), nil
+		return noData(SignalVolume, fmt.Sprintf("no MAUDE reports found for this device term (%d recalls, not part of the volume index)", recalls), src), nil
 	}
 	p95, sample, err := a.data.VolumeBaseline(ctx)
 	if err != nil {
@@ -101,8 +102,8 @@ func (a *TelemetryAnalyzer) AnalyzeVolume(ctx context.Context, device string) (*
 		Value:      round2(value),
 		Label:      labelFor(value),
 		Reasoning: fmt.Sprintf(
-			"%d public records (%d MAUDE events + %d recalls) vs p95 volume %d across the %d most-reported device types",
-			volume, events, recalls, p95, sample),
+			"%d MAUDE events vs p95 volume %d (MAUDE events) across the %d most-reported device types; %d recalls reported separately (not in the index)",
+			volume, p95, sample, recalls),
 		ConfidenceLevel: conf,
 		SourceType:      src,
 	}, nil
@@ -119,8 +120,8 @@ func (a *TelemetryAnalyzer) AnalyzeTrend(ctx context.Context, device string, rec
 		return nil, fmt.Errorf("trend: recentDays must be >= 1 (got %d)", recentDays)
 	}
 	now := timeNow().UTC()
-	mid := now.AddDate(0, 0, -recentDays)
-	old := now.AddDate(0, 0, -2*recentDays)
+	mid := now.AddDate(0, 0, -recentDays+1) // inclusive [mid, now] = recentDays days
+	old := mid.AddDate(0, 0, -recentDays)
 	const day = "20060102"
 
 	recent, err := a.data.EventTotalWindow(ctx, device, mid.Format(day), now.Format(day))

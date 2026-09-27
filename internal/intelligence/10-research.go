@@ -24,7 +24,7 @@ const (
 
 // CT.gov overall-status groupings.
 var (
-	activeStatuses  = []string{"RECRUITING", "ACTIVE_NOT_RECRUITING", "ENROLLING_BY_INVITATION", "NOT_YET_RECRUITING"}
+	activeStatuses  = []string{"RECRUITING", "ACTIVE_NOT_RECRUITING", "ENROLLING_BY_INVITATION"}
 	stoppedStatuses = []string{"TERMINATED", "WITHDRAWN", "SUSPENDED"}
 	doneStatuses    = []string{"COMPLETED"}
 )

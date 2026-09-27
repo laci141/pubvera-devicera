@@ -57,7 +57,7 @@ func TestProblemConcentrationDiffuseIsLow(t *testing.T) {
 func TestNewProblemModes(t *testing.T) {
 	pinClock(t)
 	now := timeNow().UTC()
-	mid := now.AddDate(0, 0, -90)
+	mid := now.AddDate(0, 0, -90+1)
 	recentKey := mid.Format(day) + "-" + now.Format(day)
 	historyKey := "19900101-" + mid.AddDate(0, 0, -1).Format(day)
 
