@@ -21,8 +21,8 @@ func TestDetectSurge(t *testing.T) {
 	// Last 7 days: 50 reports (~7.1/day). Prior 70-day baseline: 20 (~0.29/day)
 	// → ratio ~25x, saturates at 1.0.
 	a := NewAnomalyAnalyzer(mockData{windows: map[string]int{
-		"20260702-20260709": 50,
-		"20260423-20260701": 20,
+		"20260703-20260709": 50,
+		"20260424-20260702": 20,
 	}})
 	sig, err := a.DetectSurge(context.Background(), "pacemaker", 7, 70)
 	if err != nil {
@@ -45,8 +45,8 @@ func TestDetectSurgeStableIsLow(t *testing.T) {
 	pinClock(t)
 	// Same daily rate in both windows → ratio 1.0 → value 0.
 	a := NewAnomalyAnalyzer(mockData{windows: map[string]int{
-		"20260702-20260709": 7,
-		"20260423-20260701": 70,
+		"20260703-20260709": 7,
+		"20260424-20260702": 70,
 	}})
 	sig, err := a.DetectSurge(context.Background(), "x", 7, 70)
 	if err != nil {
@@ -70,8 +70,8 @@ func TestDetectSurgeValidation(t *testing.T) {
 func TestDetectNewPattern(t *testing.T) {
 	pinClock(t)
 	a := NewAnomalyAnalyzer(mockData{typeWindows: map[string]map[string]int{
-		"20260609-20260709": {"Death": 5, "Malfunction": 15}, // recent 30 days
-		"19900101-20260608": {"Malfunction": 900},            // history: no deaths ever
+		"20260610-20260709": {"Death": 5, "Malfunction": 15}, // recent 30 days
+		"19900101-20260609": {"Malfunction": 900},            // history: no deaths ever
 	}})
 	sig, err := a.DetectNewPattern(context.Background(), "pacemaker", 30)
 	if err != nil {
@@ -88,8 +88,8 @@ func TestDetectNewPattern(t *testing.T) {
 func TestDetectNewPatternNoneIsLow(t *testing.T) {
 	pinClock(t)
 	a := NewAnomalyAnalyzer(mockData{typeWindows: map[string]map[string]int{
-		"20260609-20260709": {"Malfunction": 60},
-		"19900101-20260608": {"Malfunction": 900, "Injury": 10},
+		"20260610-20260709": {"Malfunction": 60},
+		"19900101-20260609": {"Malfunction": 900, "Injury": 10},
 	}})
 	sig, err := a.DetectNewPattern(context.Background(), "x", 30)
 	if err != nil {

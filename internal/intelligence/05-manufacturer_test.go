@@ -31,8 +31,8 @@ func TestFirmRecallTrendGrowth(t *testing.T) {
 	// so the mock cannot drift from the implementation's date math.
 	const periodDays = 181
 	now := timeNow().UTC()
-	mid := now.AddDate(0, 0, -periodDays)
-	old := now.AddDate(0, 0, -2*periodDays)
+	mid := now.AddDate(0, 0, -periodDays+1)
+	old := mid.AddDate(0, 0, -periodDays)
 	recentKey := mid.Format(day) + "-" + now.Format(day)
 	priorKey := old.Format(day) + "-" + mid.AddDate(0, 0, -1).Format(day)
 

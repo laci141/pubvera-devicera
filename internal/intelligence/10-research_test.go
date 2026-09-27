@@ -51,7 +51,7 @@ func TestActiveResearchShare(t *testing.T) {
 	a := NewResearchAnalyzer(mockData{
 		trials: 400,
 		trialStatuses: map[string]int{
-			"RECRUITING|ACTIVE_NOT_RECRUITING|ENROLLING_BY_INVITATION|NOT_YET_RECRUITING": 88,
+			"RECRUITING|ACTIVE_NOT_RECRUITING|ENROLLING_BY_INVITATION": 88,
 		},
 	})
 	sig, err := a.AnalyzeActiveResearch(context.Background(), "pacemaker")
