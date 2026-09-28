@@ -12,7 +12,7 @@ import "context"
 type Signal struct {
 	SignalType      string   `json:"signal_type"` // SEVERITY | VOLUME | TREND
 	Value           float64  `json:"value"`       // 0.0-1.0
-	Label           string   `json:"label"`       // Critical | High | Medium | Low | Unknown
+	Label           string   `json:"label"`       // one word from the signal's direction (see labelForDirection) or Unknown
 	Reasoning       string   `json:"reasoning"`
 	ConfidenceLevel string   `json:"confidence_level"` // HIGH | MEDIUM | LOW
 	SourceType      []string `json:"source_type"`
@@ -29,14 +29,62 @@ const (
 	SignalVolumeShift = "VOLUME_SHIFT" // sustained level change vs prior periods
 )
 
-// Labels, bucketed from Value by labelFor.
+// Labels, bucketed from Value by labelFor (concern words) or
+// labelForDirection (activity and quality words).
 const (
 	LabelCritical = "Critical"
 	LabelHigh     = "High"
 	LabelMedium   = "Medium"
 	LabelLow      = "Low"
 	LabelUnknown  = "Unknown" // no data — distinct from a true Low reading
+
+	// Activity words: how much public-record activity, not how much concern.
+	// Distinct from the concern words so the page can colour by word alone.
+	LabelQuiet    = "Quiet"
+	LabelModerate = "Moderate"
+	LabelBusy     = "Busy"
+	LabelTop      = "Top"
+
+	// Quality words: higher is better.
+	LabelPoor   = "Poor"
+	LabelFair   = "Fair"
+	LabelGood   = "Good"
+	LabelStrong = "Strong"
 )
+
+// direction is which way a signal's Value points, and so which words name
+// its buckets. The concern words read as a hazard scale, which misleads for
+// a signal whose high value only means more activity, or means better data.
+type direction int
+
+const (
+	directionConcern  direction = iota // higher = more concern: Low/Medium/High/Critical
+	directionActivity                  // higher = more activity: Quiet/Moderate/Busy/Top
+	directionQuality                   // higher = better: Poor/Fair/Good/Strong
+)
+
+// directionWords names each direction's buckets, lowest first.
+var directionWords = map[direction][4]string{
+	directionConcern:  {LabelLow, LabelMedium, LabelHigh, LabelCritical},
+	directionActivity: {LabelQuiet, LabelModerate, LabelBusy, LabelTop},
+	directionQuality:  {LabelPoor, LabelFair, LabelGood, LabelStrong},
+}
+
+// labelForDirection buckets a normalized value on labelFor's thresholds
+// (>0.7, >0.5, >0.3) and names the bucket in d's words.
+func labelForDirection(d direction, v float64) string {
+	w := directionWords[d]
+	switch {
+	case v > 0.7:
+		return w[3]
+	case v > 0.5:
+		return w[2]
+	case v > 0.3:
+		return w[1]
+	default:
+		return w[0]
+	}
+}
 
 // Confidence levels, from sample size.
 const (
@@ -46,19 +94,9 @@ const (
 )
 
 // labelFor buckets a normalized value: >0.7 Critical, >0.5 High, >0.3 Medium,
-// else Low (guardrail 6).
-func labelFor(v float64) string {
-	switch {
-	case v > 0.7:
-		return LabelCritical
-	case v > 0.5:
-		return LabelHigh
-	case v > 0.3:
-		return LabelMedium
-	default:
-		return LabelLow
-	}
-}
+// else Low (guardrail 6). These are the concern words; activity and quality
+// signals use labelForDirection instead.
+func labelFor(v float64) string { return labelForDirection(directionConcern, v) }
 
 // confidenceForSample maps a sample size to a confidence level: 200+ records
 // HIGH, 50+ MEDIUM, otherwise LOW.

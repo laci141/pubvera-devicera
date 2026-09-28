@@ -100,7 +100,7 @@ func (a *TelemetryAnalyzer) AnalyzeVolume(ctx context.Context, device string) (*
 	return &Signal{
 		SignalType: SignalVolume,
 		Value:      round2(value),
-		Label:      labelFor(value),
+		Label:      labelForDirection(directionActivity, value),
 		Reasoning: fmt.Sprintf(
 			"%d MAUDE events vs p95 volume %d (MAUDE events) across the %d most-reported device types; %d recalls reported separately (not in the index)",
 			volume, p95, sample, recalls),

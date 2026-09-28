@@ -62,7 +62,7 @@ func (a *ReportingAnalyzer) AnalyzeIndependentReporting(ctx context.Context, dev
 	return &Signal{
 		SignalType: SignalIndependentReporting,
 		Value:      round2(value),
-		Label:      labelFor(value),
+		Label:      labelForDirection(directionQuality, value),
 		Reasoning: fmt.Sprintf(
 			"%d of %d source-typed reports come from independent reporters (health professionals, patients, user facilities) vs %d company-filed and %d other; MAUDE casing variants merged; a reading about data provenance, not the device",
 			buckets["independent"], total, buckets["company"], buckets["other"]),

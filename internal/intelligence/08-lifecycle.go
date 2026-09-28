@@ -128,7 +128,7 @@ func (a *LifecycleAnalyzer) AnalyzeLifecyclePhase(ctx context.Context, device st
 	return &Signal{
 		SignalType: SignalLifecyclePhase,
 		Value:      round2(instability),
-		Label:      labelFor(instability),
+		Label:      labelForDirection(directionActivity, instability),
 		Reasoning: fmt.Sprintf(
 			"phase: %s (decade windows oldest→newest: %s; newest vs previous %d vs %d, decade peak %d); value is trajectory instability, not hazard; reporting lag undercounts the newest window",
 			phase, winString(wins), newest, prev, peak),
@@ -176,7 +176,7 @@ func (a *LifecycleAnalyzer) AnalyzeRecallRecency(ctx context.Context, device str
 	return &Signal{
 		SignalType: SignalRecallRecency,
 		Value:      round2(value),
-		Label:      labelFor(value),
+		Label:      labelForDirection(directionActivity, value),
 		Reasoning: fmt.Sprintf(
 			"newest recall initiated %s (%.0f days ago; today=1.0 fading to 0.0 at five years); recency of enforcement activity, not a harm reading",
 			last, days),

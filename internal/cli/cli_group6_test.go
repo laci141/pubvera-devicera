@@ -24,13 +24,13 @@ func sampleDossier() *intelligence.IntelligenceDossier {
 		Device: "pacemaker",
 		Signals: []intelligence.Signal{
 			{SignalType: "SEVERITY", Value: 0.45, Label: "Medium", ConfidenceLevel: "HIGH", Reasoning: "weighted MAUDE mix"},
-			{SignalType: "VOLUME", Value: 1.0, Label: "Critical", ConfidenceLevel: "HIGH", Reasoning: "719k vs p95 444k"},
-			{SignalType: "INDEPENDENT_REPORTING", Value: 0.34, Label: "Medium", ConfidenceLevel: "HIGH", Reasoning: "provenance"},
+			{SignalType: "VOLUME", Value: 1.0, Label: "Top", ConfidenceLevel: "HIGH", Reasoning: "719k vs p95 444k"},
+			{SignalType: "INDEPENDENT_REPORTING", Value: 0.34, Label: "Fair", ConfidenceLevel: "HIGH", Reasoning: "provenance"},
 		},
 		Highlights: []string{
-			"telemetry/volume = 1.00 (Critical): 719k records",
-			"correlation/corroboration = 1.00 (Critical): 4 of 4 feeds",
-			"lifecycle/recall-recency = 0.93 (Critical): 133 days",
+			"telemetry/volume = 1.00 (Top): 719k records",
+			"correlation/corroboration = 1.00 (Top): 4 of 4 feeds",
+			"lifecycle/recall-recency = 0.93 (Top): 133 days",
 		},
 		DataQuality:     []string{"INDEPENDENT_REPORTING: 34% independent"},
 		AttentionIndex:  0.47,
@@ -45,7 +45,7 @@ func TestSignalsListsAllReadings(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit=%d want 0", code)
 	}
-	for _, want := range []string{"SEVERITY", "VOLUME", "INDEPENDENT_REPORTING", "Critical", "not a risk score"} {
+	for _, want := range []string{"SEVERITY", "VOLUME", "INDEPENDENT_REPORTING", "Top", "Fair", "not a risk score"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("signals output missing %q\n%s", want, out)
 		}

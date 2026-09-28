@@ -525,6 +525,16 @@
   .chip.label-high     { color: var(--high); }
   .chip.label-critical { color: var(--crit); }
   .chip.label-unknown  { color: var(--ink-3); }
+  /* Activity words: more public-record activity, not more concern — neutral. */
+  .chip.label-quiet    { color: var(--accent); }
+  .chip.label-moderate { color: var(--accent); }
+  .chip.label-busy     { color: var(--accent); }
+  .chip.label-top      { color: var(--accent); }
+  /* Quality words: higher is better. */
+  .chip.label-strong   { color: var(--good); }
+  .chip.label-good     { color: var(--good); }
+  .chip.label-fair     { color: var(--warn); }
+  .chip.label-poor     { color: var(--high); }
   .src-badge {
     display: inline-block;
     font-family: var(--mono);
@@ -2115,6 +2125,14 @@
     if (l === 'medium') return 'label-medium';
     if (l === 'high') return 'label-high';
     if (l === 'critical') return 'label-critical';
+    if (l === 'quiet') return 'label-quiet';
+    if (l === 'moderate') return 'label-moderate';
+    if (l === 'busy') return 'label-busy';
+    if (l === 'top') return 'label-top';
+    if (l === 'strong') return 'label-strong';
+    if (l === 'good') return 'label-good';
+    if (l === 'fair') return 'label-fair';
+    if (l === 'poor') return 'label-poor';
     return 'label-unknown';
   }
 
@@ -2124,6 +2142,11 @@
     if (l === 'high') return 'var(--high)';
     if (l === 'medium') return 'var(--warn)';
     if (l === 'low') return 'var(--good)';
+    // Activity words are neutral; quality words run good → poor.
+    if (l === 'quiet' || l === 'moderate' || l === 'busy' || l === 'top') return 'var(--accent)';
+    if (l === 'strong' || l === 'good') return 'var(--good)';
+    if (l === 'fair') return 'var(--warn)';
+    if (l === 'poor') return 'var(--high)';
     return 'var(--ink-3)';
   }
 

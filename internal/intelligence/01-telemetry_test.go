@@ -166,8 +166,8 @@ func TestAnalyzeVolume(t *testing.T) {
 	if sig.Value != 0.67 { // 200/300 rounded
 		t.Errorf("value=%v want 0.67", sig.Value)
 	}
-	if sig.Label != LabelHigh {
-		t.Errorf("label=%q want High", sig.Label)
+	if sig.Label != LabelBusy {
+		t.Errorf("label=%q want Busy", sig.Label)
 	}
 	if sig.ConfidenceLevel != ConfidenceMedium { // baseline sample 50 < 100
 		t.Errorf("confidence=%q want MEDIUM for 50-type baseline", sig.ConfidenceLevel)
@@ -190,8 +190,8 @@ func TestAnalyzeVolumeCapsAtOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sig.Value != 1.0 || sig.Label != LabelCritical {
-		t.Errorf("got %v/%q want 1.0/Critical (capped)", sig.Value, sig.Label)
+	if sig.Value != 1.0 || sig.Label != LabelTop {
+		t.Errorf("got %v/%q want 1.0/Top (capped)", sig.Value, sig.Label)
 	}
 }
 
