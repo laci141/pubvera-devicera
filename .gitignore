@@ -20,6 +20,11 @@ dogfood-results.json
 export-pacemaker.csv
 phase2-dashboard.html
 
+# Browser E2E (e2e/): dependencies and Playwright output
+e2e/node_modules/
+e2e/test-results/
+e2e/playwright-report/
+
 # Environment / local config
 .env
 *.local

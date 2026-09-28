@@ -1,0 +1,186 @@
+import { test as base, expect, type Page } from '@playwright/test';
+import fs from 'fs';
+import path from 'path';
+
+// Recorded once from a live `mdi serve` for "pacemaker" and kept verbatim.
+const FIXTURE_DIR = path.join(__dirname, 'fixtures', 'pacemaker');
+const DEVICE = 'pacemaker';
+const API_ENDPOINTS = ['dossier', 'signals', 'trend', 'failure-modes', 'devices'];
+
+const XLSX_URL = 'https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js';
+const XLSX_LOCAL = require.resolve('xlsx-js-style/dist/xlsx.bundle.js');
+
+// The signal types the attention index averages. Mirrors signalDirections in
+// internal/intelligence/12-synthesis.go, kept here on purpose rather than read
+// from the page, so a page that miscounts cannot also redefine the answer.
+const ACTIVITY_TYPES = ['VOLUME', 'VOLUME_SHIFT', 'CORROBORATION', 'LIFECYCLE_PHASE', 'RECALL_RECENCY'];
+const ACTIVITY_LABELS = ['Quiet', 'Moderate', 'Busy', 'Top'];
+
+// The trend and problems cards share the .signal-card class (and .sig-code);
+// only real signal cards carry a value.
+const SIGNAL_CARD = '.signal-card:has(.sig-value)';
+
+function fixture(name: string): any {
+  return JSON.parse(fs.readFileSync(path.join(FIXTURE_DIR, name + '.json'), 'utf8'));
+}
+
+type Harness = {
+  // Uncaught page exceptions (window 'error' / unhandled rejections).
+  pageErrors: string[];
+  // alert()/confirm() messages, auto-dismissed so a dialog never hangs a test.
+  dialogs: string[];
+};
+
+// Offline guard, installed for every test:
+//  - the page and anything else on the local server comes from the real binary;
+//  - /config.json and /api/* are answered only from fixtures, and an /api path
+//    or device without a fixture is a test failure, never a live call;
+//  - the XLSX CDN script is served from node_modules;
+//  - every other non-local request is aborted and fails the test.
+const test = base.extend<Harness>({
+  pageErrors: async ({ page }, use) => {
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    await use(errors);
+  },
+  dialogs: async ({ page }, use) => {
+    const msgs: string[] = [];
+    page.on('dialog', (d) => {
+      msgs.push(d.message());
+      d.dismiss().catch(() => {});
+    });
+    await use(msgs);
+  },
+  context: async ({ context }, use) => {
+    const violations: string[] = [];
+    await context.route('**/*', async (route) => {
+      const url = new URL(route.request().url());
+      const local = url.hostname === '127.0.0.1' || url.hostname === 'localhost';
+      if (local) {
+        if (url.pathname === '/config.json') {
+          return route.fulfill({ path: path.join(FIXTURE_DIR, 'config.json'), contentType: 'application/json' });
+        }
+        if (url.pathname.startsWith('/api/')) {
+          const name = url.pathname.slice('/api/'.length);
+          if (!API_ENDPOINTS.includes(name) || url.searchParams.get('device') !== DEVICE) {
+            violations.push('no fixture for ' + url.pathname + url.search);
+            return route.fulfill({ status: 599, contentType: 'application/json', body: '{"error":"no e2e fixture"}' });
+          }
+          return route.fulfill({ path: path.join(FIXTURE_DIR, name + '.json'), contentType: 'application/json' });
+        }
+        return route.continue();
+      }
+      if (url.href === XLSX_URL) {
+        // crossorigin="anonymous" + SRI on the tag: the response needs CORS.
+        return route.fulfill({
+          path: XLSX_LOCAL,
+          contentType: 'application/javascript',
+          headers: { 'Access-Control-Allow-Origin': '*' },
+        });
+      }
+      violations.push('external request blocked: ' + url.href);
+      return route.abort('blockedbyclient');
+    });
+    await use(context);
+    expect(violations, 'requests the offline guard had to refuse').toEqual([]);
+  },
+});
+
+async function search(page: Page) {
+  await page.goto('/');
+  await page.locator('#device-input').fill(DEVICE);
+  await page.locator('#search-btn').click();
+  await expect(page.locator('.hero-card .meta')).toContainText('Signals measured:');
+}
+
+test('smoke: pacemaker search renders hero, signals and device table', async ({ page, pageErrors }) => {
+  const dossier = fixture('dossier');
+  const devices = fixture('devices');
+  await search(page);
+
+  await expect(page.locator('.hero-card .gauge-center .num')).toHaveText(dossier.attention_index.toFixed(2));
+  await expect(page.locator('.hero-card .device-name')).toHaveText(DEVICE);
+  const measured = await page.locator('.hero-card .meta').textContent();
+  expect(measured).toMatch(new RegExp('^Signals measured: ' + dossier.signals_measured + ' of \\d+$'));
+
+  await expect(page.locator('h2.section', { hasText: 'Device Records' })).toHaveText(
+    '📇 Device Records (' + devices.records.length + ')');
+  await expect(page.locator('.dev-table tbody tr')).toHaveCount(devices.records.length);
+  await expect(page.locator(SIGNAL_CARD)).toHaveCount(dossier.signals.length);
+
+  // The locally served spreadsheet library loaded (SRI matched) and exports.
+  expect(await page.evaluate(() => typeof (window as any).XLSX)).toBe('object');
+  const download = page.waitForEvent('download');
+  await page.locator('.dev-card button', { hasText: 'Excel' }).click();
+  expect((await download).suggestedFilename()).toBe('devicera-devices.xlsx');
+
+  expect(pageErrors).toEqual([]);
+});
+
+test('activity labels get a neutral dot, concern labels keep the traffic light', async ({ page }) => {
+  await search(page);
+  const cards = page.locator(SIGNAL_CARD);
+  const n = await cards.count();
+  expect(n).toBeGreaterThan(0);
+
+  const seen: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const card = cards.nth(i);
+    const label = ((await card.locator('.chip-row .chip').first().textContent()) || '').trim();
+    const code = ((await card.locator('.sig-code').textContent()) || '').trim();
+    const dot = ((await card.locator('.status-dot').textContent()) || '').trim();
+    seen.push(label);
+    if (ACTIVITY_LABELS.includes(label)) {
+      expect(dot, code + ' (' + label + ')').toBe('⚪');
+    }
+    if (label === 'High' || label === 'Critical') {
+      expect(dot, code + ' (' + label + ')').toBe('🔴');
+    }
+  }
+  // The fixture must actually exercise both branches.
+  expect(seen).toContain('Top');
+  expect(seen).toContain('High');
+});
+
+test('"Signals measured: N of M" counts only activity signals in M', async ({ page }) => {
+  const dossier = fixture('dossier');
+  const signals = fixture('signals');
+  const m = signals.records.filter((r: any) => ACTIVITY_TYPES.includes(r.signal)).length;
+  // Guard the fixture: M must differ from the total, or the check proves nothing.
+  expect(m).toBeLessThan(signals.records.length);
+
+  await search(page);
+  await expect(page.locator('.hero-card .meta')).toHaveText(
+    'Signals measured: ' + dossier.signals_measured + ' of ' + m);
+});
+
+test('highlight cards keep their "(Label)" suffix', async ({ page }) => {
+  const dossier = fixture('dossier');
+  const expected: { value: string; label: string }[] = dossier.highlights.slice(0, 3).map((h: string) => {
+    const mm = /^\S+ = ([\d.]+) \((\w+)\): /.exec(h);
+    expect(mm, 'fixture highlight format: ' + h).not.toBeNull();
+    return { value: parseFloat(mm![1]).toFixed(2), label: mm![2] };
+  });
+  expect(expected.length).toBeGreaterThan(0);
+
+  await search(page);
+  for (let i = 0; i < expected.length; i++) {
+    const card = page.locator('.mini-card.area-hl' + (i + 1));
+    await expect(card.locator('.mini-title')).toHaveText('⭐ Highlight #' + (i + 1));
+    await expect(card.locator('.mini-lead')).toHaveText(
+      new RegExp(' — ' + expected[i].value.replace('.', '\\.') + ' \\(' + expected[i].label + '\\)$'));
+  }
+});
+
+test('Excel export without the XLSX library alerts instead of throwing', async ({ page, pageErrors, dialogs }) => {
+  // Page routes win over the context guard: this one request is aborted.
+  await page.route(XLSX_URL, (route) => route.abort('failed'));
+  await search(page);
+  expect(await page.evaluate(() => typeof (window as any).XLSX)).toBe('undefined');
+
+  await page.locator('.dev-card button', { hasText: 'Excel' }).click();
+  await expect.poll(() => dialogs.length).toBe(1);
+  expect(dialogs[0]).toBe(
+    'Excel export is unavailable right now (the spreadsheet library did not load). Please use CSV or JSON instead.');
+  expect(pageErrors).toEqual([]);
+});
