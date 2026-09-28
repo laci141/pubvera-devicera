@@ -41,8 +41,10 @@ func TestSynthesizeFullDossier(t *testing.T) {
 	if len(d.DataQuality) != 2 {
 		t.Errorf("data-quality entries=%d want 2", len(d.DataQuality))
 	}
-	if d.SignalsMeasured < 5 {
-		t.Errorf("measured=%d want >=5 readable signals", d.SignalsMeasured)
+	// Readable activity signals: volume, corroboration, recall recency
+	// (volume shift and lifecycle phase see empty windows and read Unknown).
+	if d.SignalsMeasured != 3 {
+		t.Errorf("measured=%d want 3 readable activity signals", d.SignalsMeasured)
 	}
 	if d.AttentionIndex <= 0 || d.AttentionIndex > 1 {
 		t.Errorf("index=%v out of (0,1]", d.AttentionIndex)
@@ -67,6 +69,56 @@ func TestSynthesizeFullDossier(t *testing.T) {
 	}
 	if len(d.Notes) != 0 {
 		t.Errorf("full fixture should produce no failure notes: %v", d.Notes)
+	}
+}
+
+// TestAttentionIndexIsActivityMeanOnly proves concern readings never feed the
+// attention index: every concern signal here reads Critical, yet the index is
+// exactly the mean of the readable activity signals.
+func TestAttentionIndexIsActivityMeanOnly(t *testing.T) {
+	pinClock(t)
+	fx := mockData{
+		eventTypes:    map[string]int{"Death": 100},
+		recalls:       5,
+		p95:           300,
+		sample:        100,
+		recallClasses: map[string]int{"Class I": 5},
+		recallActions: []ComplianceAction{act("20260331", "Class I", "Z-1")},
+		globalTypes:   map[string]int{"Malfunction": 100},
+	}
+	d, err := NewSynthesisAnalyzer(fx).Synthesize(context.Background(), "pacemaker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	activity := map[string]bool{
+		SignalVolume: true, SignalVolumeShift: true, SignalCorroboration: true,
+		SignalLifecyclePhase: true, SignalRecallRecency: true,
+	}
+	concern := map[string]bool{
+		SignalSeverity: true, SignalRecallSeverity: true,
+		SignalEvidenceGap: true, SignalPeerSeverityDelta: true,
+	}
+	sum, n := 0.0, 0
+	for _, s := range d.Signals {
+		if concern[s.SignalType] && s.Value <= 0.7 {
+			t.Fatalf("fixture must drive %s high, got %.2f", s.SignalType, s.Value)
+		}
+		if activity[s.SignalType] && s.Label != LabelUnknown {
+			sum += s.Value
+			n++
+		}
+	}
+	if n != 3 {
+		t.Fatalf("readable activity signals=%d want 3 (volume, corroboration, recall recency)", n)
+	}
+	if want := round2(sum / float64(n)); d.AttentionIndex != want {
+		t.Errorf("attention_index=%v want %v (activity mean only)", d.AttentionIndex, want)
+	}
+	if d.SignalsMeasured != n {
+		t.Errorf("signals_measured=%d want %d (activity count)", d.SignalsMeasured, n)
+	}
+	if !strings.Contains(d.IndexFormula, "activity signals") || !strings.Contains(d.IndexFormula, "NOT risk") {
+		t.Errorf("formula must name activity signals and disclaim risk: %q", d.IndexFormula)
 	}
 }
 
@@ -125,8 +177,10 @@ func TestLiveSynthesis(t *testing.T) {
 	if d.AttentionIndex < 0 || d.AttentionIndex > 1 {
 		t.Errorf("index %v out of [0,1]", d.AttentionIndex)
 	}
-	if d.SignalsMeasured < 5 {
-		t.Errorf("pacemaker should yield >=5 readable signals, got %d", d.SignalsMeasured)
+	// SignalsMeasured counts activity signals only (5 types), and one can
+	// legitimately be Unknown for a given device, so require 3, not 5.
+	if d.SignalsMeasured < 3 {
+		t.Errorf("pacemaker should yield >=3 readable activity signals, got %d", d.SignalsMeasured)
 	}
 	b, _ := json.MarshalIndent(struct {
 		Device          string
