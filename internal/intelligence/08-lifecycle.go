@@ -137,6 +137,9 @@ func (a *LifecycleAnalyzer) AnalyzeLifecyclePhase(ctx context.Context, device st
 	}, nil
 }
 
+// timelineFetch is how many enforcement records back the action lists.
+const timelineFetch = 25
+
 // recallRecencyScaleDays: a recall today reads 1.0, fading linearly to 0.0 at
 // five years with no further recalls.
 const recallRecencyScaleDays = 1825.0

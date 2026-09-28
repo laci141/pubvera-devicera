@@ -10,6 +10,11 @@ import (
 	"time"
 )
 
+func act(date, class, ref string) ComplianceAction {
+	return ComplianceAction{Date: date, Type: "recall (" + class + ")",
+		Description: "device model X", Reference: ref}
+}
+
 // mockData is a canned read-only Data view.
 type mockData struct {
 	eventTypes     map[string]int
