@@ -7,7 +7,7 @@ import (
 )
 
 // ManufacturerAnalyzer is Module 05: firm-level enforcement readings, the
-// manufacturer counterpart of Module 04's device view. All three signals read
+// manufacturer counterpart of the device-level recall readings. All three signals read
 // the openFDA enforcement feed filtered by recalling_firm; the firm string
 // matches as a phrase, so subsidiaries with different registered names are
 // separate firms — stated in every reasoning.
