@@ -6,11 +6,15 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/laci141/medical-device-intelligence/internal/cliutil"
+	"github.com/laci141/medical-device-intelligence/internal/sources"
 )
 
 // getJSON fetches a URL and decodes the JSON body, failing the test on any
@@ -551,7 +555,6 @@ func TestDeviceRowScoreOrdering(t *testing.T) {
 		return deviceRowScore(row, "cancer")
 	}
 	slide := score(devRow("CANCER", "Yancheng Jingwei Chemicals Co., Ltd", "Class I", "Slide, Microscope"), "Brand name")
-	sunglasses := score(devRow("STAND UP TO CANCER", "Foster Grant", "Unclassified", "Sunglasses, Non-Prescription"), "Brand name")
 	seek := score(devRow("MI Cancer Seek®", "Caris MPI", "Class III", "Next Generation Sequencing Oncology Panel Test System"), "Brand name")
 	screening := score(devRow("Colon Cancer Screening Test", "Epigenomics", "Class II", "Cancer Screening Test, Colorectal"), "Both")
 
@@ -562,7 +565,6 @@ func TestDeviceRowScoreOrdering(t *testing.T) {
 	}{
 		{"category support beats brand collision", screening, slide, "Colon Cancer Screening Test", "CANCER slide"},
 		{"descriptive name beats brand collision", seek, slide, "MI Cancer Seek", "CANCER slide"},
-		{"reviewed class beats unclassified eyewear", seek, sunglasses, "MI Cancer Seek", "sunglasses"},
 		{"both-legs match beats single leg", screening, seek, "Colon Cancer Screening Test", "MI Cancer Seek"},
 	}
 	for _, c := range cases {
@@ -571,6 +573,24 @@ func TestDeviceRowScoreOrdering(t *testing.T) {
 				t.Errorf("%s scored %d, %s scored %d — want the first strictly higher", c.hiN, c.hi, c.loN, c.lo)
 			}
 		})
+	}
+}
+
+// FDA risk class says how dangerous a device type is, not how well a row
+// matches the query (DESIGN-06): rows with the same evidence must tie whatever
+// their class.
+func TestDeviceRowScoreIgnoresClass(t *testing.T) {
+	for _, matched := range []string{"Brand name", "Product category", "Both"} {
+		base := devRow("STAND UP TO CANCER", "Foster Grant", "Unclassified", "Sunglasses, Non-Prescription")
+		base["matched_on"] = matched
+		want := deviceRowScore(base, "cancer")
+		for _, class := range []string{"Class I", "Class II", "Class III", "Not specified"} {
+			row := devRow("STAND UP TO CANCER", "Foster Grant", class, "Sunglasses, Non-Prescription")
+			row["matched_on"] = matched
+			if got := deviceRowScore(row, "cancer"); got != want {
+				t.Errorf("matched_on=%s: %s scored %d, Unclassified scored %d — class must not change the score", matched, class, got, want)
+			}
+		}
 	}
 }
 
@@ -629,6 +649,130 @@ func TestMergeDeviceRowsRanksBeforeTruncating(t *testing.T) {
 	for _, want := range []string{"MI Cancer Seek®", "Prosigna Breast Cancer Prognostic Gene Signature Assay"} {
 		if !names[want] {
 			t.Errorf("%q was truncated away; rows=%v", want, names)
+		}
+	}
+}
+
+// udiRaw builds a GUDID record in the shape openFDA device/udi returns: the
+// primary DI, a brand name and the product codes in the record's own order.
+// codes alternate code, FDA device name.
+func udiRaw(di, brand string, codes ...string) map[string]any {
+	pcs := []any{}
+	for i := 0; i+1 < len(codes); i += 2 {
+		pcs = append(pcs, map[string]any{
+			"code": codes[i], "name": codes[i+1],
+			"openfda": map[string]any{"device_name": codes[i+1], "device_class": "2"},
+		})
+	}
+	return map[string]any{
+		"identifiers":   []any{map[string]any{"type": "Primary", "id": di}},
+		"brand_name":    brand,
+		"company_name":  "Acme",
+		"product_codes": pcs,
+	}
+}
+
+// serveDevices runs handleDevices end to end: the brand leg from a fake UDI
+// source, the product-category leg from a local stand-in for api.fda.gov.
+// Returns the response records keyed by UDI.
+func serveDevices(t *testing.T, query string, brand, category []map[string]any) map[string]map[string]any {
+	t.Helper()
+	recs := make([]sources.RawRecord, 0, len(brand))
+	for _, raw := range brand {
+		recs = append(recs, sources.RawRecord{Raw: raw})
+	}
+	withSources(t, map[string]sources.Source{
+		"openfda_device_udi": fakeSource{name: "openfda_device_udi", id: "public_device_record_key", recs: recs},
+	})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"meta":    map[string]any{"results": map[string]any{"total": len(category)}},
+			"results": category,
+		})
+	}))
+	t.Cleanup(upstream.Close)
+	old := udiClient
+	udiClient = cliutil.NewClient(upstream.URL)
+	t.Cleanup(func() { udiClient = old })
+
+	rec := httptest.NewRecorder()
+	handleDevices(rec, httptest.NewRequest(http.MethodGet, "/api/devices?device="+url.QueryEscape(query), nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
+	}
+	var body struct {
+		Records []map[string]any `json:"records"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	byUDI := map[string]map[string]any{}
+	for _, r := range body.Records {
+		byUDI[str(r["udi"])] = r
+	}
+	return byUDI
+}
+
+// A record the category search found only through a non-first product code
+// (Zoll's ECG cable lists DRO fourth) is a weak match, and its reason names
+// the code that matched — the shown category (product_codes[0]) never does.
+func TestDevicesSecondaryCodeMatchIsWeak(t *testing.T) {
+	rows := serveDevices(t, "pacemaker", nil, []map[string]any{
+		udiRaw("ECG-1", "ECG",
+			"DRT", "Monitor, Cardiac (Incl. Cardiotachometer & Rate Alarm)",
+			"DQA", "Oximeter",
+			"DRO", "Pacemaker, Cardiac, External Transcutaneous (Non-Invasive)"),
+		udiRaw("MICRA-1", "Micra", "PNJ", "Leadless Pacemaker"),
+	})
+
+	ecg := rows["ECG-1"]
+	if ecg == nil {
+		t.Fatalf("ECG-1 missing from response: %v", rows)
+	}
+	if got := str(ecg["match_strength"]); got != "weak" {
+		t.Errorf("ECG-1 match_strength=%q, want \"weak\"", got)
+	}
+	if got, want := str(ecg["match_reason"]), "Secondary FDA code DRO: Pacemaker, Cardiac, External Transcutaneous (Non-Invasive)"; got != want {
+		t.Errorf("ECG-1 match_reason=%q, want %q", got, want)
+	}
+	if got := str(ecg["product_category"]); got != "Monitor, Cardiac (Incl. Cardiotachometer & Rate Alarm)" {
+		t.Errorf("product_category=%q — existing field must be unchanged", got)
+	}
+
+	micra := rows["MICRA-1"]
+	if got := str(micra["match_strength"]); got != "strong" {
+		t.Errorf("MICRA-1 match_strength=%q, want \"strong\" (term in the shown category)", got)
+	}
+	if got := str(micra["match_reason"]); got != "FDA category" {
+		t.Errorf("MICRA-1 match_reason=%q, want \"FDA category\"", got)
+	}
+}
+
+// A brand-name hit is strong even with no product code at all (PACKROOM's
+// pacemaker procedure packs carry none).
+func TestDevicesBrandNameHitIsStrong(t *testing.T) {
+	rows := serveDevices(t, "pacemaker", []map[string]any{
+		udiRaw("PACK-1", "Kit, Pacemaker Drape"),
+		udiRaw("NETECH-1", "External Pacemaker Analyzer", "DTC", "Analyzer, Pacemaker Generator Function"),
+	}, nil)
+
+	for udi, wantReason := range map[string]string{
+		"PACK-1":   "Brand name",
+		"NETECH-1": "Brand name + FDA category",
+	} {
+		r := rows[udi]
+		if r == nil {
+			t.Fatalf("%s missing from response: %v", udi, rows)
+		}
+		if got := str(r["match_strength"]); got != "strong" {
+			t.Errorf("%s match_strength=%q, want \"strong\"", udi, got)
+		}
+		if got := str(r["match_reason"]); got != wantReason {
+			t.Errorf("%s match_reason=%q, want %q", udi, got, wantReason)
+		}
+		if got := str(r["matched_on"]); got != "Brand name" {
+			t.Errorf("%s matched_on=%q — existing field must be unchanged", udi, got)
 		}
 	}
 }

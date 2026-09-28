@@ -728,6 +728,10 @@
   .class-badge.cu { color: var(--ink-3); }
   .dev-table td.udi-cell a { color: var(--accent); text-decoration: none; }
   .dev-table td.udi-cell a:hover { text-decoration: underline; }
+  .weak-matches { margin-top: 1rem; border-top: 1px solid var(--glass-border); padding-top: 0.7rem; }
+  .weak-matches summary { cursor: pointer; font-size: 0.8rem; font-weight: 600; color: var(--ink-2); }
+  .weak-matches summary:hover { color: var(--accent); }
+  .weak-matches .group-desc { margin: 0.5rem 0 0.6rem; }
 
   /* ---- Legal notice ---- */
   .legal { margin-top: 1.25rem; padding: 1.2rem 1.4rem; }
@@ -2324,10 +2328,10 @@
   // ============================================================
   var lastData = { udi: null, trend: null, problems: null, signals: null };
 
-  // deviceView is the live view of the Device Records table: rows() returns
-  // what the user currently sees (category chip + text filter + Class III +
-  // sort applied), desc() names the active filters. Exports read THIS, not the
-  // full lastData set — what you see is what you export.
+  // deviceView is the live view of the Device Records tables: rows() returns
+  // the strong rows and then the weak ones (collapsed or not) with category
+  // chip + text filter + Class III + sort applied; desc() names the active
+  // filters. Exports read THIS, not the full lastData set.
   var deviceView = null;
 
   var ANALYSIS_LABEL = {
@@ -2520,6 +2524,7 @@
       var udi = bibEsc(r['UDI'] || '');
       var cls = bibEsc(r['Device Class'] || '');
       var cat = bibEsc(r['Product Category'] || '');
+      var reason = bibEsc(r['Match Reason'] || '');
       var lines = ['@misc{' + bibKeyForDevice(r, i) + ','];
       lines.push('  title        = {' + title + '},');
       if (company) lines.push('  author       = {{' + company + '}},');
@@ -2527,7 +2532,7 @@
       var ry = bibYear(r);
       if (ry) lines.push('  year         = {' + ry + '},');
       if (udi) lines.push('  url          = {https://accessgudid.nlm.nih.gov/devices/' + encodeURIComponent(udi) + '},');
-      lines.push('  note         = {' + (cls ? 'Device ' + cls : 'Device class unknown') + (cat ? ' — ' + cat : '') + '; exported from Devicera; data via openFDA}');
+      lines.push('  note         = {' + (cls ? 'Device ' + cls : 'Device class unknown') + (cat ? ' — ' + cat : '') + (reason ? '; match: ' + reason : '') + '; exported from Devicera; data via openFDA}');
       lines.push('}');
       out.push(lines.join('\n'));
     });
@@ -2626,6 +2631,15 @@
     ['similar_folded', 'Similar Folded']
   ];
 
+  // Exports and the Weak matches table add Match Reason right after Matched
+  // On: which field carried the query — for a weak match, the secondary FDA
+  // product code the row itself never shows.
+  var DEVICE_EXPORT_COLS = [];
+  DEVICE_COLS.forEach(function (c) {
+    DEVICE_EXPORT_COLS.push(c);
+    if (c[0] === 'matched_on') DEVICE_EXPORT_COLS.push(['match_reason', 'Match Reason']);
+  });
+
   function isoDate(v) {
     var m = /^(\d{4}-\d{2}-\d{2})/.exec(String(v || ''));
     return m ? m[1] : String(v || '');
@@ -2680,9 +2694,9 @@
     if (!recs.length) return;
 
     // Display-keyed rows: these keys become the CSV/Excel column headers.
-    var rows = recs.map(function (r) {
+    function toRow(r) {
       var o = {};
-      DEVICE_COLS.forEach(function (c) {
+      DEVICE_EXPORT_COLS.forEach(function (c) {
         var v = r[c[0]];
         o[c[1]] = c[0] === 'last_update' ? isoDate(v) : (v == null ? '' : v);
       });
@@ -2690,9 +2704,18 @@
       // column): the AccessGUDID verify link for CSV/Excel/JSON.
       o['URL'] = o['UDI'] ? gudidURL(o['UDI']) : '';
       return o;
+    }
+    // Strong rows carry the query in their name or shown FDA category and fill
+    // the main table; weak rows matched only through a secondary FDA product
+    // code and wait, collapsed, below it. Exports carry both.
+    var strongRows = [], weakRows = [];
+    recs.forEach(function (r) {
+      (r.match_strength === 'weak' ? weakRows : strongRows).push(toRow(r));
     });
+    var rows = strongRows.concat(weakRows);
     lastData.udi = rows;
     var headers = DEVICE_COLS.map(function (c) { return c[1]; });
+    var weakHeaders = DEVICE_EXPORT_COLS.map(function (c) { return c[1]; });
 
     var heading = document.createElement('h2');
     heading.className = 'section';
@@ -2700,42 +2723,72 @@
     results.appendChild(heading);
     var desc = document.createElement('div');
     desc.className = 'group-desc';
-    desc.textContent = 'Matched on brand name and FDA product category, ranked by how much structural evidence supports the match (category hit, both searches agreeing, a name that is more than the query itself). One company’s near-identical registrations are folded into a single row — see the Similar Folded column. Device names vary by manufacturer, so a major brand may not appear even when it exists — verify at AccessGUDID before concluding a device is absent. Click a column header to sort.';
+    desc.textContent = 'Matched on brand name and FDA product category, ranked by how much structural evidence supports the match (category hit, both searches agreeing, a name that is more than the query itself; FDA device class plays no part). Records whose name and shown category do not contain the search term — found only through another FDA product code on the record — are listed separately under Weak matches. One company’s near-identical registrations are folded into a single row — see the Similar Folded column. Device names vary by manufacturer, so a major brand may not appear even when it exists — verify at AccessGUDID before concluding a device is absent. Click a column header to sort.';
     results.appendChild(desc);
 
     var card = document.createElement('div');
     card.className = 'glass dev-card';
     var total = devicesResp.data.total;
     var folded = devicesResp.data.folded_similar || 0;
-    var metaTxt = rows.length + ' records' + (total && total > rows.length ? ' of ' + fmtNum(total) : '') +
+    var metaTxt = (weakRows.length ? strongRows.length + ' strong + ' + weakRows.length + ' weak matches' : rows.length + ' records') +
+      (total && total > rows.length ? ' of ' + fmtNum(total) : '') +
       (folded ? ' · ' + fmtNum(folded) + ' near-identical rows folded into the rows above' : '');
     card.innerHTML = metaRow(metaTxt, 'udi', 'devicera-devices.json');
 
-    var wrap = elDiv('dev-table-wrap');
-    var table = document.createElement('table');
-    table.className = 'dev-table';
-    var thead = document.createElement('thead');
-    var htr = document.createElement('tr');
-    headers.forEach(function (h, i) {
-      var th = document.createElement('th');
-      th.setAttribute('data-idx', String(i));
-      th.textContent = h;
-      var arrow = document.createElement('span');
-      arrow.className = 'arrow';
-      arrow.textContent = '⇅';
-      th.appendChild(arrow);
-      htr.appendChild(th);
-    });
-    thead.appendChild(htr);
-    var tbody = document.createElement('tbody');
-    table.appendChild(thead);
-    table.appendChild(tbody);
-    wrap.appendChild(table);
-    card.appendChild(wrap);
+    // makeTable builds one sortable device table for the given columns.
+    function makeTable(hdrs) {
+      var table = document.createElement('table');
+      table.className = 'dev-table';
+      var thead = document.createElement('thead');
+      var htr = document.createElement('tr');
+      hdrs.forEach(function (h) {
+        var th = document.createElement('th');
+        th.setAttribute('data-col', h);
+        th.textContent = h;
+        var arrow = document.createElement('span');
+        arrow.className = 'arrow';
+        arrow.textContent = '⇅';
+        th.appendChild(arrow);
+        htr.appendChild(th);
+      });
+      thead.appendChild(htr);
+      var tbody = document.createElement('tbody');
+      table.appendChild(thead);
+      table.appendChild(tbody);
+      return { table: table, tbody: tbody, headers: hdrs, rows: [] };
+    }
 
-    // Category chips: counts always come from the FULL result set, so chips
+    var wrap = elDiv('dev-table-wrap');
+    var main = makeTable(headers);
+    main.rows = strongRows;
+    wrap.appendChild(main.table);
+    card.appendChild(wrap);
+    var tables = [main];
+
+    // Weak matches: collapsed below the main table (native <details>), the
+    // same columns plus Match Reason so each row says which code matched.
+    var weak = null;
+    if (weakRows.length) {
+      var weakSec = document.createElement('details');
+      weakSec.className = 'weak-matches';
+      var summary = document.createElement('summary');
+      summary.textContent = 'Weak matches (' + weakRows.length + ') — matched only through a secondary FDA product code';
+      weakSec.appendChild(summary);
+      var weakDesc = elDiv('group-desc');
+      weakDesc.textContent = 'The search term is not in these records’ name or shown FDA category. FDA lists it under another of their product codes, named in Match Reason — often a multi-function device (a defibrillator with a built-in external pacer) or a kit that contains such a part. They are included in every export.';
+      weakSec.appendChild(weakDesc);
+      var weakWrap = elDiv('dev-table-wrap');
+      weak = makeTable(weakHeaders);
+      weak.rows = weakRows;
+      weakWrap.appendChild(weak.table);
+      weakSec.appendChild(weakWrap);
+      card.appendChild(weakSec);
+      tables.push(weak);
+    }
+
+    // Category chips: counts always come from the FULL strong set, so chips
     // never vanish while the user is typing in the text filter.
-    var chips = buildCategoryChips(rows, 8);
+    var chips = buildCategoryChips(strongRows, 8);
     var catBar = null;
     if (chips.length > 1) {
       catBar = elDiv('cat-bar');
@@ -2743,7 +2796,7 @@
       lbl.className = 'cat-lbl';
       lbl.textContent = 'Filter by category:';
       catBar.appendChild(lbl);
-      [{ label: 'All', count: rows.length, cats: null }].concat(chips).forEach(function (ch, i) {
+      [{ label: 'All', count: strongRows.length, cats: null }].concat(chips).forEach(function (ch, i) {
         var b = document.createElement('button');
         b.type = 'button';
         b.className = 'dl cat-chip' + (i === 0 ? ' active' : '');
@@ -2759,22 +2812,24 @@
       card.insertBefore(catBar, wrap); // between the meta row and the table
     }
 
-    var state = { filter: '', class3: false, sortIdx: -1, sortDir: 0, category: null, categoryLabel: '' };
+    // One filter/sort state for both tables. Sorting is by column name, so it
+    // also works on the weak table's extra Match Reason column.
+    var state = { filter: '', class3: false, sortKey: '', sortDir: 0, category: null, categoryLabel: '' };
     var numRe = /^-?\d+(\.\d+)?$/;
 
-    function viewRows() {
-      var out = rows.filter(function (r) {
+    function viewRows(t) {
+      var out = t.rows.filter(function (r) {
         if (state.category && state.category.indexOf(String(r['Product Category'] || '')) === -1) return false;
         if (state.class3 && r['Device Class'] !== 'Class III') return false;
         if (state.filter) {
           var f = state.filter.toLowerCase();
-          var hit = headers.some(function (h) { return String(r[h]).toLowerCase().indexOf(f) !== -1; });
+          var hit = t.headers.some(function (h) { return String(r[h]).toLowerCase().indexOf(f) !== -1; });
           if (!hit) return false;
         }
         return true;
       });
-      if (state.sortIdx >= 0 && state.sortDir !== 0) {
-        var h = headers[state.sortIdx];
+      if (state.sortKey && state.sortDir !== 0) {
+        var h = state.sortKey;
         // Numeric sort only when every non-empty cell is a plain number;
         // ISO dates and text compare lexicographically (correct for YYYY-MM-DD).
         var numeric = out.some(function (r) { return String(r[h]).trim() !== ''; }) &&
@@ -2790,18 +2845,19 @@
       return out;
     }
 
-    function updateArrows() {
-      Array.prototype.forEach.call(table.querySelectorAll('th .arrow'), function (a, i) {
-        a.textContent = (i === state.sortIdx) ? (state.sortDir === 1 ? '↑' : '↓') : '⇅';
+    function updateArrows(t) {
+      Array.prototype.forEach.call(t.table.querySelectorAll('th'), function (th) {
+        var a = th.querySelector('.arrow');
+        a.textContent = (th.getAttribute('data-col') === state.sortKey) ? (state.sortDir === 1 ? '↑' : '↓') : '⇅';
       });
     }
 
-    function renderBody() {
-      clearChildren(tbody);
-      var vr = viewRows();
+    function fillTable(t) {
+      clearChildren(t.tbody);
+      var vr = viewRows(t);
       vr.forEach(function (r) {
         var tr = document.createElement('tr');
-        headers.forEach(function (h) {
+        t.headers.forEach(function (h) {
           var td = document.createElement('td');
           if (h === 'UDI') td.className = 'udi-cell';
           if (h === 'UDI' && r[h]) {
@@ -2822,22 +2878,30 @@
           }
           tr.appendChild(td);
         });
-        tbody.appendChild(tr);
+        t.tbody.appendChild(tr);
       });
-      var qc = card.querySelector('.qcount');
-      if (qc) qc.textContent = ' · ' + vr.length + ' / ' + rows.length + ' rows';
-      updateArrows();
+      updateArrows(t);
+      return vr.length;
     }
 
-    // ONE delegated click handler for every th: unsorted → asc → desc → off.
-    table.addEventListener('click', function (e) {
-      var th = e.target && e.target.closest ? e.target.closest('th') : null;
-      if (!th || !table.contains(th)) return;
-      var idx = +th.getAttribute('data-idx');
-      if (state.sortIdx !== idx) { state.sortIdx = idx; state.sortDir = 1; }
-      else if (state.sortDir === 1) { state.sortDir = -1; }
-      else { state.sortIdx = -1; state.sortDir = 0; }
-      renderBody();
+    function renderBody() {
+      var shown = fillTable(main);
+      if (weak) fillTable(weak);
+      var qc = card.querySelector('.qcount');
+      if (qc) qc.textContent = ' · ' + shown + ' / ' + strongRows.length + ' rows';
+    }
+
+    // ONE delegated click handler per table: unsorted → asc → desc → off.
+    tables.forEach(function (t) {
+      t.table.addEventListener('click', function (e) {
+        var th = e.target && e.target.closest ? e.target.closest('th') : null;
+        if (!th || !t.table.contains(th)) return;
+        var col = th.getAttribute('data-col');
+        if (state.sortKey !== col) { state.sortKey = col; state.sortDir = 1; }
+        else if (state.sortDir === 1) { state.sortDir = -1; }
+        else { state.sortKey = ''; state.sortDir = 0; }
+        renderBody();
+      });
     });
 
     var qf = card.querySelector('.qfilter');
@@ -2870,10 +2934,13 @@
       renderBody();
     });
 
-    // Publish the live view for the export suite: exports mirror exactly what
-    // the table shows under the current chips/filters/sort.
+    // Publish the live view for the export suite: exports carry both tables —
+    // strong rows, then weak ones, open or collapsed — under the current
+    // chips/filters/sort.
     deviceView = {
-      rows: viewRows,
+      rows: function () {
+        return tables.reduce(function (acc, t) { return acc.concat(viewRows(t)); }, []);
+      },
       // The true result-set size reported by openFDA (the "of 16,787" on the
       // meta line), so exports can state the truncation. null when unknown.
       total: (devicesResp && devicesResp.data && devicesResp.data.total) || null,

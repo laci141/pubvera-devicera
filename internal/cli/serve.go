@@ -696,8 +696,9 @@ func normalizeDeviceName(s string) string {
 //	    equality with a common word is the mass-registration signature
 //	    ("CANCER" microscope slides): weak evidence, so it ranks below anything
 //	    with category support.
-//	+1  Class II or Class III. Higher-risk classes are reviewed device types,
-//	    which correlates with a specific rather than incidental match.
+//
+// FDA device class is deliberately not a term (DESIGN-06): it says how risky
+// a device type is, not how well the row matches the query.
 func deviceRowScore(row map[string]any, query string) int {
 	q := normalizeDeviceName(query)
 	name := normalizeDeviceName(str(row["device_name"]))
@@ -732,11 +733,92 @@ func deviceRowScore(row map[string]any, query string) int {
 	case q != "" && strings.Contains(name, q):
 		score += 2
 	}
-	switch str(row["device_class"]) {
-	case "Class II", "Class III":
-		score++
-	}
 	return score
+}
+
+// queryTermIn reports whether text carries the query: as a substring of the
+// normalised text, or with every query word present as a word of it (so
+// "insulin pump" is in "Alternate Controller Enabled Insulin Infusion Pump").
+func queryTermIn(text, query string) bool {
+	q := normalizeDeviceName(query)
+	if q == "" {
+		return false
+	}
+	t := normalizeDeviceName(text)
+	if strings.Contains(t, q) {
+		return true
+	}
+	words := make(map[string]bool)
+	for _, w := range strings.Fields(t) {
+		words[w] = true
+	}
+	for _, w := range strings.Fields(q) {
+		if !words[w] {
+			return false
+		}
+	}
+	return true
+}
+
+// annotateDeviceMatch records why a GUDID record matched the query, as
+// match_strength and match_reason on its row. Strong: the query is in the
+// device name or in the category the table shows (product_codes[0]), or it is
+// the record's UDI-DI. Weak: the category search found the record only
+// through a later product code (Zoll's ECG cable lists "Pacemaker, Cardiac,
+// External Transcutaneous" fourth); the reason names that code, because the
+// row itself never shows it.
+func annotateDeviceMatch(row, raw map[string]any, query string) map[string]any {
+	inName := queryTermIn(str(row["device_name"]), query)
+	inCategory := queryTermIn(str(row["product_category"]), query)
+	reason := ""
+	switch {
+	case inName && inCategory:
+		reason = "Brand name + FDA category"
+	case inName && str(raw["brand_name"]) == "":
+		reason = "Device name" // no brand: the name is the clipped description
+	case inName:
+		reason = "Brand name"
+	case inCategory:
+		reason = "FDA category"
+	}
+	if reason == "" {
+		q := strings.TrimSpace(query)
+		for _, id := range asMaps(raw["identifiers"]) {
+			if q != "" && strings.EqualFold(str(id["id"]), q) {
+				reason = "UDI-DI"
+				break
+			}
+		}
+	}
+	if reason != "" {
+		row["match_strength"] = "strong"
+		row["match_reason"] = reason
+		return row
+	}
+
+	row["match_strength"] = "weak"
+	row["match_reason"] = "openFDA match; query not found in the name or FDA categories"
+	pcs := asMaps(raw["product_codes"])
+	for i := 1; i < len(pcs); i++ {
+		name := ""
+		if of, ok := pcs[i]["openfda"].(map[string]any); ok {
+			name = str(of["device_name"])
+		}
+		if name == "" {
+			name = str(pcs[i]["name"])
+		}
+		if !queryTermIn(name, query) {
+			continue
+		}
+		code := str(pcs[i]["code"])
+		if code == "" {
+			row["match_reason"] = "Secondary FDA code: " + name
+		} else {
+			row["match_reason"] = "Secondary FDA code " + code + ": " + name
+		}
+		break
+	}
+	return row
 }
 
 // deviceRowDetail counts the populated, informative fields of a row. Used only
@@ -900,11 +982,11 @@ func handleDevices(w http.ResponseWriter, r *http.Request) {
 
 	brandRows := make([]map[string]any, 0, len(brandRecs))
 	for _, rec := range brandRecs {
-		brandRows = append(brandRows, deviceRow(rec.Raw))
+		brandRows = append(brandRows, annotateDeviceMatch(deviceRow(rec.Raw), rec.Raw, device))
 	}
 	catRows := make([]map[string]any, 0, len(catRecs))
 	for _, raw := range catRecs {
-		catRows = append(catRows, deviceRow(raw))
+		catRows = append(catRows, annotateDeviceMatch(deviceRow(raw), raw, device))
 	}
 	rows, dups, folded := mergeDeviceRows(brandRows, catRows, device, 100)
 
@@ -915,7 +997,7 @@ func handleDevices(w http.ResponseWriter, r *http.Request) {
 		"total_brand":    brandTotal,
 		"total_category": catTotal,
 		"folded_similar": folded,
-		"note":           "GUDID device records via openFDA device/udi; union of a brand-name/UDI-DI search and an FDA product-category search, deduplicated by UDI (total is approximate when the sets overlap beyond the fetched pages); near-identical rows from one company's product line are folded into a single row carrying similar_folded, and rows are ranked by structural relevance before the page is cut; registration data may be incomplete or delayed",
+		"note":           "GUDID device records via openFDA device/udi; union of a brand-name/UDI-DI search and an FDA product-category search, deduplicated by UDI (total is approximate when the sets overlap beyond the fetched pages); near-identical rows from one company's product line are folded into a single row carrying similar_folded, and rows are ranked by structural relevance (not by device class) before the page is cut; match_strength is strong when the query is in the device name or the shown FDA category and weak when the record matched only through a secondary FDA product code, which match_reason names; registration data may be incomplete or delayed",
 		"disclaimer":     cliutil.Disclaimer,
 	}
 	var partial []string

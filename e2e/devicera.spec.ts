@@ -20,8 +20,35 @@ const ACTIVITY_LABELS = ['Quiet', 'Moderate', 'Busy', 'Top'];
 // only real signal cards carry a value.
 const SIGNAL_CARD = '.signal-card:has(.sig-value)';
 
+// The Device Records main table (strong matches) and the collapsed section
+// holding the weak ones (matched only through a secondary FDA product code).
+const MAIN_ROWS = '.dev-card > .dev-table-wrap .dev-table tbody tr';
+const WEAK_SECTION = '.dev-card details.weak-matches';
+
 function fixture(name: string): any {
   return JSON.parse(fs.readFileSync(path.join(FIXTURE_DIR, name + '.json'), 'utf8'));
+}
+
+const strongRecords = (d: any): any[] => d.records.filter((r: any) => r.match_strength === 'strong');
+const weakRecords = (d: any): any[] => d.records.filter((r: any) => r.match_strength === 'weak');
+
+// RFC 4180 reader for the CSV export (quoted cells, doubled quotes, CRLF).
+function parseCSV(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [], cell = '', quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch === '"' && text[i + 1] === '"') { cell += '"'; i++; }
+      else if (ch === '"') quoted = false;
+      else cell += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === ',') { row.push(cell); cell = ''; }
+    else if (ch === '\n') { row.push(cell.replace(/\r$/, '')); rows.push(row); row = []; cell = ''; }
+    else cell += ch;
+  }
+  if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+  return rows;
 }
 
 type Harness = {
@@ -105,7 +132,7 @@ test('smoke: pacemaker search renders hero, signals and device table', async ({ 
 
   await expect(page.locator('h2.section', { hasText: 'Device Records' })).toHaveText(
     '📇 Device Records (' + devices.records.length + ')');
-  await expect(page.locator('.dev-table tbody tr')).toHaveCount(devices.records.length);
+  await expect(page.locator(MAIN_ROWS)).toHaveCount(strongRecords(devices).length);
   await expect(page.locator(SIGNAL_CARD)).toHaveCount(dossier.signals.length);
 
   // The locally served spreadsheet library loaded (SRI matched) and exports.
@@ -183,4 +210,73 @@ test('Excel export without the XLSX library alerts instead of throwing', async (
   expect(dialogs[0]).toBe(
     'Excel export is unavailable right now (the spreadsheet library did not load). Please use CSV or JSON instead.');
   expect(pageErrors).toEqual([]);
+});
+
+test('weak matches: main table is strong-only, weak section is collapsed and explains itself', async ({ page, pageErrors }) => {
+  const devices = fixture('devices');
+  const strong = strongRecords(devices);
+  const weak = weakRecords(devices);
+  // Guard the fixture: both kinds must be present, or the test proves nothing.
+  expect(strong.length).toBeGreaterThan(0);
+  expect(weak.length).toBeGreaterThan(0);
+  expect(strong.length + weak.length).toBe(devices.records.length);
+
+  await search(page);
+
+  // Main table: exactly the strong rows, by UDI.
+  const mainUDIs = (await page.locator(MAIN_ROWS + ' td.udi-cell').allTextContents()).map((s) => s.replace(/\s*↗$/, ''));
+  expect(mainUDIs.sort()).toEqual(strong.map((r: any) => r.udi).sort());
+  // Category chips are built from the strong rows only.
+  await expect(page.locator('.dev-card .cat-chip').first()).toHaveText('All' + strong.length);
+  // The header states both counts against the upstream total.
+  await expect(page.locator('.dev-card .meta').first()).toContainText(
+    strong.length + ' strong + ' + weak.length + ' weak matches of ' + devices.total.toLocaleString('en-US'));
+
+  // Weak section: collapsed by default, its rows not visible.
+  const section = page.locator(WEAK_SECTION);
+  await expect(section).toHaveCount(1);
+  await expect(section.locator('summary')).toHaveText(
+    'Weak matches (' + weak.length + ') — matched only through a secondary FDA product code');
+  await expect(section).not.toHaveAttribute('open', /.*/);
+  await expect(section.locator('tbody tr').first()).toBeHidden();
+
+  // Expands on click; every row carries a reason naming the secondary code.
+  await section.locator('summary').click();
+  await expect(section).toHaveAttribute('open', '');
+  const weakRows = section.locator('tbody tr');
+  await expect(weakRows).toHaveCount(weak.length);
+  await expect(weakRows.first()).toBeVisible();
+  const headers = (await section.locator('thead th').allTextContents()).map((h) => h.replace(/[⇅↑↓]$/, ''));
+  const reasonIdx = headers.indexOf('Match Reason');
+  expect(reasonIdx, 'weak table headers: ' + headers.join(' | ')).toBeGreaterThanOrEqual(0);
+  const reasons = await weakRows.locator('td:nth-child(' + (reasonIdx + 1) + ')').allTextContents();
+  expect(reasons).toHaveLength(weak.length);
+  for (const r of reasons) expect(r).toContain('Secondary FDA code');
+
+  expect(pageErrors).toEqual([]);
+});
+
+test('CSV export carries every row, strong and weak, with a Match Reason column', async ({ page }) => {
+  const devices = fixture('devices');
+  await search(page);
+
+  const download = page.waitForEvent('download');
+  await page.locator('.dev-card button', { hasText: 'CSV' }).click();
+  const file = await (await download).path();
+  const lines = parseCSV(fs.readFileSync(file!, 'utf8').replace(/^﻿/, ''));
+  expect(lines[0].join(',')).toBe('sep=,'); // Excel separator hint
+  const header = lines[2];
+  const body = lines.slice(3).filter((r) => r.length > 1);
+
+  const matchedOn = header.indexOf('Matched On');
+  expect(matchedOn).toBeGreaterThanOrEqual(0);
+  expect(header[matchedOn + 1]).toBe('Match Reason');
+  expect(body).toHaveLength(devices.records.length);
+
+  const udiIdx = header.indexOf('UDI');
+  const reasonIdx = matchedOn + 1;
+  const byUDI = new Map(body.map((r) => [r[udiIdx], r[reasonIdx]]));
+  for (const rec of devices.records) {
+    expect(byUDI.get(rec.udi), 'CSV row for ' + rec.udi).toBe(rec.match_reason);
+  }
 });
