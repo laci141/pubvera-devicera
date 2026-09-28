@@ -963,7 +963,7 @@
       <h3>For researchers</h3>
       <p>Sources: openFDA (device/event MAUDE, enforcement, UDI), ClinicalTrials.gov v2, PubMed — all keyless
       public APIs, queried live with server-side totals. Every signal card carries its formula and sources
-      under “Methodology”, and confidence levels are stated per reading.</p>
+      under “Methodology”, and the sample size — how many records were counted — is stated per reading.</p>
     </div>
     <div>
       <h3>Limits</h3>
@@ -1113,7 +1113,7 @@
       friendlyName: 'Missing Event Dates',
       plainQuestion: 'How complete is the data?',
       laymanExplain: 'The share of reports that have no event date recorded at all.',
-      whyItMatters: 'Missing dates weaken every time-based reading on this page — trends, shifts, and lifecycle phases.',
+      whyItMatters: 'Undated reports are harder to place in time. The time windows on this page count reports by the date FDA received them, so missing event dates do not shift them.',
       methodology: '_missing_:date_of_event totals over MAUDE device/event records.',
       formula: 'missing_share = reports_without_date_of_event / total_reports',
       sourceBadges: ['openFDA MAUDE'],
@@ -1160,11 +1160,10 @@
   // ============================================================
   // Evidence layer: verify-at-source links + reasoning parsers.
   // ============================================================
-  var CONF_EXPLAIN = {
-    HIGH: 'HIGH confidence: computed from complete server-side counts.',
-    MEDIUM: 'MEDIUM confidence: computed from partial or lagging data.',
-    LOW: 'LOW confidence: sparse data — read as a lead, not a measurement.'
-  };
+  // What the sample band measures — and all it measures. The old confidence
+  // tooltips claimed checks the code never ran (feeds responding, missing
+  // fields); the band only ever counted records.
+  var SAMPLE_EXPLAIN = 'Sample: how many records were counted — not whether the reading is right.';
 
   // Builds the clickable raw-query links for one signal type.
   function verifyLinks(type, device) {
@@ -1784,8 +1783,9 @@
   }
 
   // Normalized accessor over both signal shapes:
-  // dossier: {signal_type, value, label, reasoning, confidence_level}
-  // signals endpoint rows: {signal, value, label, reasoning, confidence}
+  // dossier: {signal_type, value, label, reasoning, confidence_level, sample_*}
+  // signals endpoint rows: {signal, value, label, reasoning, confidence, sample_*}
+  // confidence_level/confidence are the deprecated name for the sample band.
   function normSignal(rec) {
     rec = rec || {};
     return {
@@ -1793,8 +1793,30 @@
       value: rec.value != null ? rec.value : rec.Value,
       label: rec.label || rec.Label || 'Unknown',
       confidence: rec.confidence_level || rec.confidence || rec.Confidence || 'UNKNOWN',
+      sampleSize: rec.sample_size,
+      sampleUnit: rec.sample_unit || '',
+      sampleBand: rec.sample_band || '',
       reasoning: rec.reasoning || rec.Reasoning || ''
     };
+  }
+
+  // hasSample: the server sent the sample fields (older responses carry only
+  // the deprecated confidence band, and then the page falls back to it).
+  function hasSample(n) {
+    return typeof n.sampleSize === 'number' && !!n.sampleBand;
+  }
+
+  // "Sample: large (751,555 MAUDE reports)" — or the old band as a fallback.
+  function sampleText(n) {
+    if (!hasSample(n)) return 'Confidence: ' + n.confidence;
+    return 'Sample: ' + n.sampleBand + ' (' + fmtNum(n.sampleSize) +
+      (n.sampleUnit ? ' ' + n.sampleUnit : '') + ')';
+  }
+
+  // Pill text: "large sample"; the "none" band reads "sample: none".
+  function samplePill(n) {
+    if (!hasSample(n)) return n.confidence;
+    return n.sampleBand === 'none' ? 'sample: none' : n.sampleBand + ' sample';
   }
 
   // Freshness header: dataset date, query time, and latency from the API meta.
@@ -2967,12 +2989,12 @@
     if (l === 'critical' || l === 'high') card.classList.add('span2');
     if (l === 'unknown') card.classList.add('sig-unknown');
 
-    // Trust header: source · live query · confidence, with an explaining tooltip.
+    // Trust header: source · live query · sample counted, with an explaining tooltip.
     var trust = document.createElement('div');
     trust.className = 'trust-meta';
     trust.textContent = 'Source: ' + (m.sourceBadges.length ? m.sourceBadges.join(' + ') : 'public records') +
-      ' · Live query · Confidence: ' + n.confidence;
-    trust.title = CONF_EXPLAIN[n.confidence] || '';
+      ' · Live query · ' + sampleText(n);
+    trust.title = SAMPLE_EXPLAIN;
     card.appendChild(trust);
 
     var topRow = document.createElement('div');
@@ -3049,8 +3071,8 @@
     labelChip.textContent = n.label;
     var confChip = document.createElement('span');
     confChip.className = 'chip';
-    confChip.textContent = n.confidence;
-    confChip.title = CONF_EXPLAIN[n.confidence] || '';
+    confChip.textContent = samplePill(n);
+    confChip.title = SAMPLE_EXPLAIN;
     chipRow.appendChild(labelChip);
     chipRow.appendChild(confChip);
     card.appendChild(chipRow);
@@ -3105,12 +3127,7 @@
       }
       var conf = document.createElement('p');
       conf.className = 'why';
-      var reasons = {
-        HIGH: 'HIGH because: all feeds responded · server-side totals (no page sampling) · no missing required fields.',
-        MEDIUM: 'MEDIUM because: partial or lagging data (e.g. textual phrase matching, reporting lag).',
-        LOW: 'LOW because: sparse data — read as a lead, not a measurement.'
-      };
-      conf.textContent = reasons[n.confidence] || (CONF_EXPLAIN[n.confidence] || '');
+      conf.textContent = SAMPLE_EXPLAIN;
       holder.appendChild(conf);
       // Verify-at-source: live links to the raw government queries.
       var links = verifyLinks(n.type, currentDevice);

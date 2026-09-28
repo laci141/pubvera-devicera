@@ -125,7 +125,7 @@ func (a *LifecycleAnalyzer) AnalyzeLifecyclePhase(ctx context.Context, device st
 	if prev > 0 {
 		instability = math.Min(1.0, math.Abs(float64(newest)-float64(prev))/float64(prev))
 	}
-	return &Signal{
+	return withSample(&Signal{
 		SignalType: SignalLifecyclePhase,
 		Value:      round2(instability),
 		Label:      labelForDirection(directionActivity, instability),
@@ -134,7 +134,7 @@ func (a *LifecycleAnalyzer) AnalyzeLifecyclePhase(ctx context.Context, device st
 			phase, winString(wins), newest, prev, peak),
 		ConfidenceLevel: confidenceForSample(total),
 		SourceType:      src,
-	}, nil
+	}, total, unitMAUDE), nil
 }
 
 // timelineFetch is how many enforcement records back the action lists.
@@ -173,7 +173,7 @@ func (a *LifecycleAnalyzer) AnalyzeRecallRecency(ctx context.Context, device str
 	if len(actions) >= 5 {
 		conf = ConfidenceHigh
 	}
-	return &Signal{
+	return withSample(&Signal{
 		SignalType: SignalRecallRecency,
 		Value:      round2(value),
 		Label:      labelForDirection(directionActivity, value),
@@ -182,7 +182,7 @@ func (a *LifecycleAnalyzer) AnalyzeRecallRecency(ctx context.Context, device str
 			last, days),
 		ConfidenceLevel: conf,
 		SourceType:      src,
-	}, nil
+	}, len(actions), "enforcement records fetched"), nil
 }
 
 // winString renders the window counts oldest→newest for a reasoning line.

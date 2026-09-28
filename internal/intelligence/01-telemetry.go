@@ -48,7 +48,7 @@ func (a *TelemetryAnalyzer) AnalyzeSeverity(ctx context.Context, device string) 
 	}
 	value := (float64(deaths)*weightDeath + float64(injuries)*weightInjury +
 		float64(malfunctions)*weightMalfunction) / float64(total)
-	return &Signal{
+	return withSample(&Signal{
 		SignalType: SignalSeverity,
 		Value:      round2(value),
 		Label:      labelFor(value),
@@ -57,7 +57,7 @@ func (a *TelemetryAnalyzer) AnalyzeSeverity(ctx context.Context, device string) 
 			total, deaths, injuries, malfunctions),
 		ConfidenceLevel: confidenceForSample(total),
 		SourceType:      src,
-	}, nil
+	}, total, unitMAUDE), nil
 }
 
 // AnalyzeVolume compares the device's MAUDE event volume against the p95
@@ -97,7 +97,8 @@ func (a *TelemetryAnalyzer) AnalyzeVolume(ctx context.Context, device string) (*
 	if sample < 20 {
 		conf = ConfidenceLow
 	}
-	return &Signal{
+	// The band comes from the peer baseline, so that is the sample reported.
+	return withSample(&Signal{
 		SignalType: SignalVolume,
 		Value:      round2(value),
 		Label:      labelForDirection(directionActivity, value),
@@ -106,7 +107,7 @@ func (a *TelemetryAnalyzer) AnalyzeVolume(ctx context.Context, device string) (*
 			volume, p95, sample, recalls),
 		ConfidenceLevel: conf,
 		SourceType:      src,
-	}, nil
+	}, sample, "peer device types"), nil
 }
 
 // AnalyzeTrend compares MAUDE report counts in the last recentDays against
@@ -170,7 +171,8 @@ func (a *TelemetryAnalyzer) AnalyzeTrend(ctx context.Context, device string, rec
 }
 
 // noData is the graceful empty reading (guardrail 7): explicit Unknown, zero
-// value, LOW confidence — absence of records is stated, never scored as safe.
+// value, LOW confidence, sample band "none" — absence of records is stated,
+// never scored as safe.
 func noData(signalType, reasoning string, src []string) *Signal {
 	return &Signal{
 		SignalType:      signalType,
@@ -178,6 +180,9 @@ func noData(signalType, reasoning string, src []string) *Signal {
 		Label:           LabelUnknown,
 		Reasoning:       reasoning + "; absence of records is not evidence of safety",
 		ConfidenceLevel: ConfidenceLow,
+		SampleSize:      0,
+		SampleUnit:      "records",
+		SampleBand:      SampleNone,
 		SourceType:      src,
 	}
 }

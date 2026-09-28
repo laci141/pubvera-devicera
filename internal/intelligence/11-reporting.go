@@ -59,7 +59,8 @@ func (a *ReportingAnalyzer) AnalyzeIndependentReporting(ctx context.Context, dev
 		return noData(SignalIndependentReporting, "no reporter source types recorded in MAUDE for this device term", src), nil
 	}
 	value := float64(buckets["independent"]) / float64(total)
-	return &Signal{
+	// One report can carry several source types, so the count is of tags.
+	return withSample(&Signal{
 		SignalType: SignalIndependentReporting,
 		Value:      round2(value),
 		Label:      labelForDirection(directionQuality, value),
@@ -68,12 +69,13 @@ func (a *ReportingAnalyzer) AnalyzeIndependentReporting(ctx context.Context, dev
 			buckets["independent"], total, buckets["company"], buckets["other"]),
 		ConfidenceLevel: confidenceForSample(total),
 		SourceType:      src,
-	}, nil
+	}, total, "source-type tags"), nil
 }
 
 // AnalyzeMissingEventDates reads the share of the device's reports with no
-// date_of_event — a documentation-completeness gap that weakens every
-// time-based reading (trend, surge, lifecycle).
+// date_of_event — a documentation-completeness gap in the record. The time
+// windows elsewhere filter on date_received, which every report has, so this
+// gap does not move them.
 func (a *ReportingAnalyzer) AnalyzeMissingEventDates(ctx context.Context, device string) (*Signal, error) {
 	counts, err := a.data.EventTypeCounts(ctx, device)
 	if err != nil {
@@ -95,16 +97,16 @@ func (a *ReportingAnalyzer) AnalyzeMissingEventDates(ctx context.Context, device
 	if value > 1 {
 		value = 1
 	}
-	return &Signal{
+	return withSample(&Signal{
 		SignalType: SignalMissingEventDates,
 		Value:      round2(value),
 		Label:      labelFor(value),
 		Reasoning: fmt.Sprintf(
-			"%d of %d reports have no date_of_event (%.0f%%); a completeness gap that weakens time-based readings (trend, surge, lifecycle) — about the data, not the device",
+			"%d of %d reports have no date_of_event (%.0f%%); a completeness gap in the record — the time windows here filter on date_received, so it does not shift them; about the data, not the device",
 			missing, total, value*100),
 		ConfidenceLevel: confidenceForSample(total),
 		SourceType:      src,
-	}, nil
+	}, total, unitMAUDE), nil
 }
 
 // AnalyzeMakerConcentration reads how concentrated the reporting

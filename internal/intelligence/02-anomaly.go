@@ -184,6 +184,9 @@ func (a *AnomalyAnalyzer) DetectVolumeShift(ctx context.Context, device string, 
 			Label:           labelForDirection(directionActivity, 1.0),
 			Reasoning:       fmt.Sprintf("new activity: %d reports in the last %d days after %d silent prior periods (no average to scale against)", recent, periodDays, volumeShiftPeriods),
 			ConfidenceLevel: ConfidenceLow,
+			SampleSize:      recent,
+			SampleUnit:      unitMAUDE + ", no prior baseline",
+			SampleBand:      SampleNone, // however many recent reports: nothing to compare with
 			SourceType:      src,
 		}, nil
 	}
@@ -195,7 +198,7 @@ func (a *AnomalyAnalyzer) DetectVolumeShift(ctx context.Context, device string, 
 	} else if shift < -0.1 {
 		direction = "below average"
 	}
-	return &Signal{
+	return withSample(&Signal{
 		SignalType: SignalVolumeShift,
 		Value:      round2(value),
 		Label:      labelForDirection(directionActivity, value),
@@ -204,5 +207,5 @@ func (a *AnomalyAnalyzer) DetectVolumeShift(ctx context.Context, device string, 
 			direction, recent, periodDays, avg, volumeShiftPeriods, shift*100),
 		ConfidenceLevel: confidenceForSample(recent + priorSum),
 		SourceType:      src,
-	}, nil
+	}, recent+priorSum, unitMAUDE), nil
 }

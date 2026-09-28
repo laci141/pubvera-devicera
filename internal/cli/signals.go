@@ -11,7 +11,7 @@ import (
 func init() { register("signals", cmdSignals) }
 
 // cmdSignals runs the full intelligence suite for a device and lists every
-// signal reading (value, label, reasoning, confidence, sources). These are
+// signal reading (value, label, reasoning, sample size, sources). These are
 // explainable public-record readings, never a risk score.
 func cmdSignals(ctx context.Context, stdout, stderr io.Writer, args []string) int {
 	fs, f := newFlagSet("signals")
@@ -43,11 +43,14 @@ func cmdSignals(ctx context.Context, stdout, stderr io.Writer, args []string) in
 			reasoning = clip(reasoning, 90)
 		}
 		rows = append(rows, map[string]any{
-			"signal":     s.SignalType,
-			"value":      s.Value,
-			"label":      s.Label,
-			"confidence": s.ConfidenceLevel,
-			"reasoning":  reasoning,
+			"signal":      s.SignalType,
+			"value":       s.Value,
+			"label":       s.Label,
+			"confidence":  s.ConfidenceLevel, // deprecated: same band as sample_band
+			"sample_size": s.SampleSize,
+			"sample_unit": s.SampleUnit,
+			"sample_band": s.SampleBand,
+			"reasoning":   reasoning,
 		})
 	}
 

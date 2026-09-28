@@ -23,8 +23,10 @@ func sampleDossier() *intelligence.IntelligenceDossier {
 	return &intelligence.IntelligenceDossier{
 		Device: "pacemaker",
 		Signals: []intelligence.Signal{
-			{SignalType: "SEVERITY", Value: 0.45, Label: "Medium", ConfidenceLevel: "HIGH", Reasoning: "weighted MAUDE mix"},
-			{SignalType: "VOLUME", Value: 1.0, Label: "Top", ConfidenceLevel: "HIGH", Reasoning: "719k vs p95 444k"},
+			{SignalType: "SEVERITY", Value: 0.45, Label: "Medium", ConfidenceLevel: "HIGH", Reasoning: "weighted MAUDE mix",
+				SampleSize: 751555, SampleUnit: "MAUDE reports", SampleBand: "large"},
+			{SignalType: "VOLUME", Value: 1.0, Label: "Top", ConfidenceLevel: "HIGH", Reasoning: "719k vs p95 444k",
+				SampleSize: 100, SampleUnit: "peer device types", SampleBand: "large"},
 			{SignalType: "INDEPENDENT_REPORTING", Value: 0.34, Label: "Fair", ConfidenceLevel: "HIGH", Reasoning: "provenance"},
 		},
 		Highlights: []string{
@@ -52,6 +54,50 @@ func TestSignalsListsAllReadings(t *testing.T) {
 	}
 	if !strings.Contains(out, "not medical advice") {
 		t.Error("signals must carry the disclaimer")
+	}
+}
+
+// The sample columns sit beside the deprecated confidence column in every
+// output mode: plain, --csv, --json.
+func TestSignalsCarrySampleColumns(t *testing.T) {
+	withDossier(t, sampleDossier(), nil)
+
+	out, _, code := run(cmdSignals, "--device", "pacemaker")
+	if code != 0 {
+		t.Fatalf("plain exit=%d", code)
+	}
+	for _, want := range []string{"sample_size", "sample_unit", "sample_band", "confidence", "peer device types"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("plain output missing %q\n%s", want, out)
+		}
+	}
+
+	out, _, code = run(cmdSignals, "--device", "pacemaker", "--csv")
+	if code != 0 {
+		t.Fatalf("csv exit=%d", code)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if got := strings.TrimSpace(lines[0]); got != "confidence,label,reasoning,sample_band,sample_size,sample_unit,signal,value" {
+		t.Errorf("csv header = %q", got)
+	}
+	if !strings.Contains(out, "HIGH,Medium,weighted MAUDE mix,large,751555,MAUDE reports,SEVERITY") {
+		t.Errorf("csv SEVERITY row missing sample cells:\n%s", out)
+	}
+
+	out, _, code = run(cmdSignals, "--device", "pacemaker", "--json")
+	if code != 0 {
+		t.Fatalf("json exit=%d", code)
+	}
+	var env struct {
+		Records []map[string]any `json:"records"`
+	}
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("json: %v\n%s", err, out)
+	}
+	r := env.Records[1]
+	if r["signal"] != "VOLUME" || r["sample_size"] != float64(100) ||
+		r["sample_unit"] != "peer device types" || r["sample_band"] != "large" || r["confidence"] != "HIGH" {
+		t.Errorf("json VOLUME record = %v", r)
 	}
 }
 
