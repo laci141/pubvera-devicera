@@ -21,7 +21,8 @@ jobs:
   # Browser E2E: the real embedded page, served by the real binary, in headless
   # Chromium. Every /api/* answer comes from e2e/fixtures and every other
   # external request is refused, so no live openFDA/PubMed/ClinicalTrials call
-  # is made. Runs beside build; not yet a gate for the image push.
+  # is made. The build job needs this one, so a failing browser test stops the
+  # image from being built or pushed.
   e2e:
     runs-on: ubuntu-26.04
     permissions:
@@ -60,6 +61,7 @@ jobs:
           retention-days: 14
 
   build:
+    needs: e2e
     runs-on: ubuntu-26.04
     permissions:
       contents: read
