@@ -181,7 +181,7 @@ func (a *AnomalyAnalyzer) DetectVolumeShift(ctx context.Context, device string, 
 		return &Signal{
 			SignalType:      SignalVolumeShift,
 			Value:           1.0,
-			Label:           labelFor(1.0),
+			Label:           labelForDirection(directionActivity, 1.0),
 			Reasoning:       fmt.Sprintf("new activity: %d reports in the last %d days after %d silent prior periods (no average to scale against)", recent, periodDays, volumeShiftPeriods),
 			ConfidenceLevel: ConfidenceLow,
 			SourceType:      src,
@@ -198,7 +198,7 @@ func (a *AnomalyAnalyzer) DetectVolumeShift(ctx context.Context, device string, 
 	return &Signal{
 		SignalType: SignalVolumeShift,
 		Value:      round2(value),
-		Label:      labelFor(value),
+		Label:      labelForDirection(directionActivity, value),
 		Reasoning: fmt.Sprintf(
 			"%s: %d reports in the last %d days vs %.1f average over the prior %d periods (%+.0f%%; +300%% saturates at 1.0); reporting lag undercounts the recent window",
 			direction, recent, periodDays, avg, volumeShiftPeriods, shift*100),

@@ -116,7 +116,7 @@ func (a *CorrelationAnalyzer) AnalyzeCorroboration(ctx context.Context, device s
 	return &Signal{
 		SignalType:      SignalCorroboration,
 		Value:           round2(value),
-		Label:           labelFor(value),
+		Label:           labelForDirection(directionActivity, value),
 		Reasoning:       reasoning + " — corroboration measures documentation breadth, not hazard",
 		ConfidenceLevel: confidenceForSample(eventTotal + recalls + trials + pubs),
 		SourceType:      src,

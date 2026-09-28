@@ -21,8 +21,8 @@ func TestIndependentReportingMergesCasings(t *testing.T) {
 		t.Fatal(err)
 	}
 	// independent = 300+60 = 360 of 800 = 0.45.
-	if sig.Value != 0.45 || sig.Label != LabelMedium {
-		t.Errorf("got %v/%q want 0.45/Medium", sig.Value, sig.Label)
+	if sig.Value != 0.45 || sig.Label != LabelFair {
+		t.Errorf("got %v/%q want 0.45/Fair", sig.Value, sig.Label)
 	}
 	for _, want := range []string{"360 of 800", "420 company-filed", "data provenance, not the device"} {
 		if !strings.Contains(sig.Reasoning, want) {

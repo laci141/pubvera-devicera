@@ -111,8 +111,8 @@ func TestRecallRecency(t *testing.T) {
 	}
 	// The pinned clock is 12:00 UTC, so the gap is 100.5 days:
 	// 1 - 100.5/1825 = 0.9449 → 0.94.
-	if sig.Value != 0.94 || sig.Label != LabelCritical {
-		t.Errorf("got %v/%q want 0.94/Critical", sig.Value, sig.Label)
+	if sig.Value != 0.94 || sig.Label != LabelTop {
+		t.Errorf("got %v/%q want 0.94/Top", sig.Value, sig.Label)
 	}
 	for _, want := range []string{"20260331", "100 days ago", "not a harm reading"} {
 		if !strings.Contains(sig.Reasoning, want) {

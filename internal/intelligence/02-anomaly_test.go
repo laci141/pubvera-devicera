@@ -118,8 +118,8 @@ func TestDetectVolumeShift(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sig.Value != 1.0 || sig.Label != LabelCritical {
-		t.Errorf("got %v/%q want 1.0/Critical (+300%% saturates)", sig.Value, sig.Label)
+	if sig.Value != 1.0 || sig.Label != LabelTop {
+		t.Errorf("got %v/%q want 1.0/Top (+300%% saturates)", sig.Value, sig.Label)
 	}
 	for _, want := range []string{"above average", "+300%", "prior 4 periods"} {
 		if !strings.Contains(sig.Reasoning, want) {
