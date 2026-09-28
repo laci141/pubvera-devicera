@@ -7,7 +7,7 @@ Multi-source medical device intelligence CLI (Go).
 - 23 commands + 12 intelligence modules
 - Keyless live sources: openFDA (device/MAUDE/UDI), ClinicalTrials.gov v2, PubMed
 - SQLite cache (`sync` / `watch` / `export`)
-- Explainable Signals (confidence + cited sources, NEVER a risk score)
+- Explainable Signals (sample size + cited sources, NEVER a risk score)
 
 ## Install
 

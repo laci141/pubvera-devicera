@@ -199,6 +199,42 @@ test('highlight cards keep their "(Label)" suffix', async ({ page }) => {
   }
 });
 
+test('signal cards state the sample counted, never an unchecked reliability claim', async ({ page, pageErrors }) => {
+  const dossier = fixture('dossier');
+  const byType = (t: string) => dossier.signals.find((s: any) => s.signal_type === t);
+  // Guard the fixture: it must carry the sample fields, or the check proves nothing.
+  for (const t of ['SEVERITY', 'VOLUME']) {
+    expect(byType(t)?.sample_size, t + ' sample_size in fixture').toBeGreaterThan(0);
+    expect(byType(t)?.sample_band, t + ' sample_band in fixture').toBe('large');
+  }
+  expect(byType('VOLUME').sample_unit).toBe('peer device types');
+
+  await search(page);
+
+  for (const t of ['SEVERITY', 'VOLUME']) {
+    const s = byType(t);
+    const card = page.locator(SIGNAL_CARD).filter({ has: page.locator('.sig-code', { hasText: new RegExp('^' + t + '$') }) });
+    await expect(card).toHaveCount(1);
+    await expect(card.locator('.trust-meta')).toContainText(
+      '· Live query · Sample: large (' + s.sample_size.toLocaleString('en-US') + ' ' + s.sample_unit + ')');
+    await expect(card.locator('.chip-row .chip').nth(1)).toHaveText('large sample');
+  }
+  await expect(page.locator(SIGNAL_CARD + ' .trust-meta', { hasText: 'Confidence:' })).toHaveCount(0);
+
+  // Rendered text and tooltips only (not the page source): no claim the code
+  // never checks survives anywhere in the results.
+  const rendered = await page.evaluate(() => {
+    const root = document.getElementById('results')!;
+    const titles = Array.from(root.querySelectorAll('[title]')).map((e) => e.getAttribute('title'));
+    return root.textContent + '\n' + titles.join('\n');
+  });
+  for (const claim of ['all feeds responded', 'no missing required fields', 'complete server-side counts', 'partial or lagging data']) {
+    expect(rendered, 'unchecked claim: ' + claim).not.toContain(claim);
+  }
+  expect(rendered).toContain('Sample: how many records were counted — not whether the reading is right.');
+  expect(pageErrors).toEqual([]);
+});
+
 test('Excel export without the XLSX library alerts instead of throwing', async ({ page, pageErrors, dialogs }) => {
   // Page routes win over the context guard: this one request is aborted.
   await page.route(XLSX_URL, (route) => route.abort('failed'));

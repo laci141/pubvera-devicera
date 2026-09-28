@@ -116,7 +116,7 @@ func (a *BenchmarkAnalyzer) AnalyzeSeverityDelta(ctx context.Context, device str
 	} else if delta < -0.02 {
 		direction = "below"
 	}
-	return &Signal{
+	return withSample(&Signal{
 		SignalType: SignalPeerSeverityDelta,
 		Value:      round2(value),
 		Label:      labelFor(value),
@@ -125,7 +125,7 @@ func (a *BenchmarkAnalyzer) AnalyzeSeverityDelta(ctx context.Context, device str
 			deviceSev, direction, globalSev, delta),
 		ConfidenceLevel: confidenceForSample(deviceTotal),
 		SourceType:      src,
-	}, nil
+	}, deviceTotal, unitMAUDE), nil
 }
 
 // recallRateScale: a recall rate 4x the global rate saturates at 1.0.

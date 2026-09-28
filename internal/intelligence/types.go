@@ -7,14 +7,20 @@ package intelligence
 import "context"
 
 // Signal is one explainable reading. Guardrails: Value is normalized 0.0-1.0,
-// Reasoning is plain English, ConfidenceLevel reflects sample size, and
-// SourceType names the APIs the reading came from.
+// Reasoning is plain English, the Sample fields say how many records were
+// counted (not whether the reading is right), and SourceType names the APIs
+// the reading came from.
 type Signal struct {
-	SignalType      string   `json:"signal_type"` // SEVERITY | VOLUME | TREND
-	Value           float64  `json:"value"`       // 0.0-1.0
-	Label           string   `json:"label"`       // one word from the signal's direction (see labelForDirection) or Unknown
-	Reasoning       string   `json:"reasoning"`
-	ConfidenceLevel string   `json:"confidence_level"` // HIGH | MEDIUM | LOW
+	SignalType string  `json:"signal_type"` // SEVERITY | VOLUME | TREND
+	Value      float64 `json:"value"`       // 0.0-1.0
+	Label      string  `json:"label"`       // one word from the signal's direction (see labelForDirection) or Unknown
+	Reasoning  string  `json:"reasoning"`
+	// Deprecated: ConfidenceLevel is only a sample-size band (HIGH | MEDIUM |
+	// LOW), kept for existing clients. Read SampleBand/SampleSize instead.
+	ConfidenceLevel string   `json:"confidence_level"`
+	SampleSize      int      `json:"sample_size"` // how many SampleUnit were counted
+	SampleUnit      string   `json:"sample_unit"` // what was counted, e.g. "MAUDE reports"
+	SampleBand      string   `json:"sample_band"` // large | medium | small | none
 	SourceType      []string `json:"source_type"`
 }
 
@@ -92,6 +98,40 @@ const (
 	ConfidenceMedium = "MEDIUM"
 	ConfidenceLow    = "LOW"
 )
+
+// Sample bands: how many records a reading counted, on confidenceForSample's
+// cut-offs. A band is not a reliability grade.
+const (
+	SampleLarge  = "large"
+	SampleMedium = "medium"
+	SampleSmall  = "small"
+	SampleNone   = "none" // nothing counted, or no baseline to scale against
+)
+
+// unitMAUDE is the sample unit of every reading that counts MAUDE reports.
+const unitMAUDE = "MAUDE reports"
+
+// sampleBandFor names a ConfidenceLevel in sample words, so the deprecated
+// field and SampleBand never disagree.
+func sampleBandFor(conf string) string {
+	switch conf {
+	case ConfidenceHigh:
+		return SampleLarge
+	case ConfidenceMedium:
+		return SampleMedium
+	default:
+		return SampleSmall
+	}
+}
+
+// withSample records what a reading counted: n records of unit, banded by
+// the reading's ConfidenceLevel.
+func withSample(s *Signal, n int, unit string) *Signal {
+	s.SampleSize = n
+	s.SampleUnit = unit
+	s.SampleBand = sampleBandFor(s.ConfidenceLevel)
+	return s
+}
 
 // labelFor buckets a normalized value: >0.7 Critical, >0.5 High, >0.3 Medium,
 // else Low (guardrail 6). These are the concern words; activity and quality

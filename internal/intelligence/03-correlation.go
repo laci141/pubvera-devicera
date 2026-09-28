@@ -52,7 +52,7 @@ func (a *CorrelationAnalyzer) AnalyzeRecallSeverity(ctx context.Context, device 
 	}
 	value := (float64(c1)*weightRecallClass1 + float64(c2)*weightRecallClass2 +
 		float64(c3)*weightRecallClass3) / float64(total)
-	return &Signal{
+	return withSample(&Signal{
 		SignalType: SignalRecallSeverity,
 		Value:      round2(value),
 		Label:      labelFor(value),
@@ -61,7 +61,7 @@ func (a *CorrelationAnalyzer) AnalyzeRecallSeverity(ctx context.Context, device 
 			total, c1, c2, c3),
 		ConfidenceLevel: confidenceForSample(total),
 		SourceType:      src,
-	}, nil
+	}, total, "recalls"), nil
 }
 
 // AnalyzeCorroboration counts how many of the four independent public feeds
@@ -113,14 +113,15 @@ func (a *CorrelationAnalyzer) AnalyzeCorroboration(ctx context.Context, device s
 	if len(without) > 0 {
 		reasoning += "; empty: " + strings.Join(without, ", ")
 	}
-	return &Signal{
+	n := eventTotal + recalls + trials + pubs
+	return withSample(&Signal{
 		SignalType:      SignalCorroboration,
 		Value:           round2(value),
 		Label:           labelForDirection(directionActivity, value),
 		Reasoning:       reasoning + " — corroboration measures documentation breadth, not hazard",
-		ConfidenceLevel: confidenceForSample(eventTotal + recalls + trials + pubs),
+		ConfidenceLevel: confidenceForSample(n),
 		SourceType:      src,
-	}, nil
+	}, n, "records across feeds (mixed kinds)"), nil
 }
 
 // evidenceGapSaturation: 50+ evidence records (trials+publications) per 1000
@@ -169,7 +170,7 @@ func (a *CorrelationAnalyzer) AnalyzeEvidenceGap(ctx context.Context, device str
 	}
 
 	value := math.Max(0, 1-math.Min(1, per1000/evidenceGapSaturation))
-	return &Signal{
+	return withSample(&Signal{
 		SignalType: SignalEvidenceGap,
 		Value:      round2(value),
 		Label:      labelFor(value),
@@ -178,5 +179,5 @@ func (a *CorrelationAnalyzer) AnalyzeEvidenceGap(ctx context.Context, device str
 			evidence, trials, pubs, eventTotal, per1000),
 		ConfidenceLevel: confidenceForSample(eventTotal),
 		SourceType:      src,
-	}, nil
+	}, eventTotal, unitMAUDE), nil
 }

@@ -43,9 +43,16 @@ func TestMissingEventDates(t *testing.T) {
 	if sig.Value != 0.15 || sig.Label != LabelLow {
 		t.Errorf("got %v/%q want 0.15/Low", sig.Value, sig.Label)
 	}
-	for _, want := range []string{"150 of 1000", "weakens time-based readings"} {
+	for _, want := range []string{"150 of 1000", "date_received"} {
 		if !strings.Contains(sig.Reasoning, want) {
 			t.Errorf("reasoning missing %q: %s", want, sig.Reasoning)
+		}
+	}
+	// The time windows filter on date_received, so a missing date_of_event
+	// does not move them; the reasoning must not claim it does.
+	for _, bad := range []string{"weakens time-based", "trend, surge, lifecycle"} {
+		if strings.Contains(sig.Reasoning, bad) {
+			t.Errorf("reasoning claims %q, but windows use date_received: %s", bad, sig.Reasoning)
 		}
 	}
 }
