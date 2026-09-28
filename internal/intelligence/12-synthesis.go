@@ -11,7 +11,7 @@ import (
 
 // SynthesisAnalyzer is Module 12: the capstone. It runs the module suite for
 // a device, collects every Signal into one dossier, and computes a
-// transparent attention index — the mean of the readable signal values. The
+// transparent attention index — the mean of the readable activity signal values. The
 // index measures how much public-record activity surrounds a device, and is
 // explicitly NOT a risk score: ubiquitous, well-studied devices score high on
 // attention. A failing feed degrades the dossier to "partial", never fabricates.
@@ -30,10 +30,10 @@ type IntelligenceDossier struct {
 	IndexFormula    string   `json:"index_formula"`
 	Reasoning       string   `json:"reasoning"`
 	GeneratedAt     string   `json:"generated_at"`
-	SignalsMeasured int      `json:"signals_measured"` // non-Unknown signals
+	SignalsMeasured int      `json:"signals_measured"` // readable (non-Unknown) activity signals in the index
 }
 
-const indexFormula = "attention_index = mean(value) over readable (non-Unknown) signals; measures public-record attention, NOT risk"
+const indexFormula = "attention_index = mean(value) over readable activity signals (volume, volume shift, corroboration, lifecycle phase, recall recency); concern signals are shown individually and never combined; measures public-record attention, NOT risk"
 
 // probeConcurrency bounds how many probes hit the upstream feeds at once.
 // The probes are independent, so the ceiling is politeness to openFDA rather
@@ -81,6 +81,22 @@ var dataQualityTypes = map[string]bool{
 	SignalMissingEventDates:    true,
 }
 
+// signalDirections is the direction of each signal type the dossier runs.
+// Only activity signals enter the attention index: averaging them with
+// concern readings (higher = more concern) would blend two scales that point
+// different ways, so concern signals stay individual and are never combined.
+var signalDirections = map[string]direction{
+	SignalSeverity:          directionConcern,
+	SignalVolume:            directionActivity,
+	SignalVolumeShift:       directionActivity,
+	SignalRecallSeverity:    directionConcern,
+	SignalCorroboration:     directionActivity,
+	SignalEvidenceGap:       directionConcern,
+	SignalPeerSeverityDelta: directionConcern,
+	SignalLifecyclePhase:    directionActivity,
+	SignalRecallRecency:     directionActivity,
+}
+
 // probeResult is one probe's outcome, held until every probe has finished.
 type probeResult struct {
 	sig *Signal
@@ -124,8 +140,8 @@ func (s *SynthesisAnalyzer) Synthesize(ctx context.Context, device string) (*Int
 		name string
 		sig  *Signal
 	}
-	var readable []scored
-	sum := 0.0
+	var readable []scored   // every readable non-data-quality signal (highlights)
+	sum, measured := 0.0, 0 // readable activity signals only (the index)
 	ps := s.probes()
 	results := s.runProbes(ctx, device, ps)
 	for i, p := range ps {
@@ -144,16 +160,23 @@ func (s *SynthesisAnalyzer) Synthesize(ctx context.Context, device string) (*Int
 			continue
 		}
 		readable = append(readable, scored{p.name, sig})
-		sum += sig.Value
+		if signalDirections[sig.SignalType] == directionActivity {
+			sum += sig.Value
+			measured++
+		}
 	}
-	d.SignalsMeasured = len(readable)
+	d.SignalsMeasured = measured
 
 	if len(readable) == 0 {
 		d.AttentionIndex = 0
 		d.Reasoning = "insufficient data: no signal produced a readable value; absence of records is not evidence of safety"
 		return d, nil
 	}
-	d.AttentionIndex = round2(sum / float64(len(readable)))
+	// Concern signals can be readable while every activity signal is Unknown;
+	// the index then stays 0 rather than dividing by zero.
+	if measured > 0 {
+		d.AttentionIndex = round2(sum / float64(measured))
+	}
 
 	sort.SliceStable(readable, func(i, j int) bool { return readable[i].sig.Value > readable[j].sig.Value })
 	top := readable
@@ -170,8 +193,8 @@ func (s *SynthesisAnalyzer) Synthesize(ctx context.Context, device string) (*Int
 		partial = fmt.Sprintf("; PARTIAL — %d probe(s) unavailable", len(d.Notes))
 	}
 	d.Reasoning = fmt.Sprintf(
-		"attention index %.2f over %d readable signals (%d data-quality readings reported separately)%s; %s",
-		d.AttentionIndex, len(readable), len(d.DataQuality), partial,
+		"attention index %.2f over %d readable activity signals (%d concern readings shown individually; %d data-quality readings reported separately)%s; %s",
+		d.AttentionIndex, measured, len(readable)-measured, len(d.DataQuality), partial,
 		strings.TrimPrefix(indexFormula, "attention_index = "))
 	return d, nil
 }

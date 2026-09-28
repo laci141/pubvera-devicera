@@ -1849,12 +1849,39 @@
     }
   }
 
+  // Activity signal types: the only signals the attention index averages
+  // (mirrors signalDirections in internal/intelligence/12-synthesis.go).
+  var ACTIVITY_TYPES = {
+    VOLUME: true, VOLUME_SHIFT: true, CORROBORATION: true,
+    LIFECYCLE_PHASE: true, RECALL_RECENCY: true
+  };
+
+  // Status dot per label word. The word already encodes the signal's
+  // direction, so colouring by word (not value) keeps the dot on the label's
+  // own cut-offs: activity is neutral, quality is higher-is-better, concern
+  // is the traffic light. Unknown gets no dot.
+  var DOT_ACTIVITY_TITLE = 'Activity level in public records, not concern';
+  var DOT_FOR_LABEL = {
+    quiet:  { glyph: ' ⚪', title: DOT_ACTIVITY_TITLE },
+    moderate: { glyph: ' ⚪', title: DOT_ACTIVITY_TITLE },
+    busy:   { glyph: ' ⚪', title: DOT_ACTIVITY_TITLE },
+    top:    { glyph: ' ⚪', title: DOT_ACTIVITY_TITLE },
+    strong: { glyph: ' 🟢', title: 'Strong — data quality, higher is better' },
+    good:   { glyph: ' 🟢', title: 'Good — data quality, higher is better' },
+    fair:   { glyph: ' 🟡', title: 'Fair — data quality, higher is better' },
+    poor:   { glyph: ' 🔴', title: 'Poor — data quality, higher is better' },
+    low:    { glyph: ' 🟢', title: 'Low — concern reading in public records, not a safety verdict' },
+    medium: { glyph: ' 🟡', title: 'Medium — concern reading in public records, not a safety verdict' },
+    high:   { glyph: ' 🔴', title: 'High — concern reading in public records, not a safety verdict' },
+    critical: { glyph: ' 🔴', title: 'Critical — concern reading in public records, not a safety verdict' }
+  };
+
   // ---- Gauge helpers ----
+  // Neutral at every value: the attention index measures activity, and a
+  // green-to-red ramp would read a busy public record as a hazard.
   function gaugeColor(v) {
     if (v == null) return 'var(--ink-3)';
-    if (v < 0.3) return 'var(--good)';
-    if (v <= 0.6) return 'var(--warn)';
-    return 'var(--high)';
+    return 'var(--accent)';
   }
 
   function attentionSentence(v) {
@@ -1957,9 +1984,12 @@
 
     var meta = document.createElement('div');
     meta.className = 'meta';
+    // "of M" counts the activity signals in the response (readable or Unknown)
+    // — the only ones the index can include — not every signal.
     var totalSignals = null;
-    if (s && s.summary && (s.summary.signals != null || s.summary.Signals != null)) {
-      totalSignals = s.summary.signals != null ? s.summary.signals : s.summary.Signals;
+    var countFrom = dSignals.length ? dSignals : ((s && s.records) || []);
+    if (countFrom.length) {
+      totalSignals = countFrom.filter(function (r) { return ACTIVITY_TYPES[normSignal(r).type]; }).length;
     }
     meta.textContent = 'Signals measured: ' + (signalsMeasured != null ? signalsMeasured : '—') +
       (totalSignals != null ? ' of ' + totalSignals : '');
@@ -2890,13 +2920,13 @@
     var valueEl = document.createElement('div');
     valueEl.className = 'sig-value';
     valueEl.textContent = (typeof n.value === 'number') ? n.value.toFixed(2) : '—';
-    // Status dot: attention band by value, with a fact-language tooltip.
-    if (typeof n.value === 'number') {
+    // Status dot from the label word (see DOT_FOR_LABEL); Unknown gets none.
+    var dotSpec = DOT_FOR_LABEL[l];
+    if (typeof n.value === 'number' && dotSpec) {
       var dot2 = document.createElement('span');
       dot2.className = 'status-dot';
-      dot2.textContent = n.value < 0.3 ? ' 🟢' : (n.value <= 0.6 ? ' 🟡' : ' 🔴');
-      dot2.title = (n.value < 0.3 ? 'Low attention' : (n.value <= 0.6 ? 'Elevated' : 'High attention')) +
-        ' — attention level in public records, not safety';
+      dot2.textContent = dotSpec.glyph;
+      dot2.title = dotSpec.title;
       valueEl.appendChild(dot2);
     }
     topRow.appendChild(nameEl);
