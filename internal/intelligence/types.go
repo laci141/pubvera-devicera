@@ -176,7 +176,8 @@ type Data interface {
 	// PublicationTotal is the PubMed Title/Abstract match total.
 	PublicationTotal(ctx context.Context, device string) (int, error)
 	// RecallActions returns individual enforcement records as timeline
-	// actions (Module 08 recall recency), newest first as delivered by openFDA.
+	// actions (Module 08 recall recency), newest first: the live read requests
+	// sort=recall_initiation_date:desc (openFDA's default order is not by date).
 	RecallActions(ctx context.Context, device string, limit int) ([]ComplianceAction, error)
 	// Firm-level enforcement reads (Module 05), filtered by recalling_firm.
 	FirmRecallClassCounts(ctx context.Context, firm string) (map[string]int, error)

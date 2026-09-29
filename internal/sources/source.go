@@ -28,6 +28,7 @@ type Query struct {
 	DateFrom  string // YYYYMMDD
 	DateTo    string // YYYYMMDD
 	Class     int    // 0 = unset; 1..3 = FDA class filter (openFDA only)
+	Sort      string // optional openFDA sort, e.g. "recall_initiation_date:desc"; "" = provider order
 }
 
 // EventCounter is an optional capability: a source that can return a server-side

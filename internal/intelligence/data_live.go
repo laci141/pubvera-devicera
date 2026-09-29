@@ -97,7 +97,10 @@ func (liveData) RecallActions(ctx context.Context, device string, limit int) ([]
 	if !ok {
 		return nil, fmt.Errorf("enforcement source unavailable")
 	}
-	recs, _, err := src.Fetch(ctx, sources.Query{Term: device, Limit: limit})
+	// Newest first, so the page holds the most recent recalls, not index order.
+	recs, _, err := src.Fetch(ctx, sources.Query{
+		Term: device, Limit: limit, Sort: "recall_initiation_date:desc",
+	})
 	if err != nil {
 		return nil, err
 	}
