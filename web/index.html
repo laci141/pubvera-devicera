@@ -2755,6 +2755,14 @@
     var metaTxt = (weakRows.length ? strongRows.length + ' strong + ' + weakRows.length + ' weak matches' : rows.length + ' records') +
       (total && total > rows.length ? ' of ' + fmtNum(total) : '') +
       (folded ? ' · ' + fmtNum(folded) + ' near-identical rows folded into the rows above' : '');
+    // The category search fetches at most 1,000 records (openFDA's per-request
+    // maximum); say so when there were more, so a missing device is not read
+    // as absent.
+    var fetchedCat = devicesResp.data.fetched_category;
+    var totalCat = devicesResp.data.total_category;
+    if (typeof fetchedCat === 'number' && totalCat > fetchedCat) {
+      metaTxt += ' · category search: first ' + fmtNum(fetchedCat) + ' of ' + fmtNum(totalCat);
+    }
     card.innerHTML = metaRow(metaTxt, 'udi', 'devicera-devices.json');
 
     // makeTable builds one sortable device table for the given columns.
