@@ -322,3 +322,147 @@ test('CSV export carries every row, strong and weak, with a Match Reason column'
     expect(byUDI.get(rec.udi), 'CSV row for ' + rec.udi).toBe(rec.match_reason);
   }
 });
+
+// ---- One failed /api call degrades only its own section ----
+//
+// Each of the five /api calls passes Caddy forward_auth on its own, so one can
+// fail while the others succeed: auth logs showed 3 incidents in 7 days, each
+// with 1 of 5 calls getting 503 from the quota check and the rest 200.
+
+type Failure = { status: number; body?: object } | 'drop';
+
+// Answers the named endpoints with `failure` — only the first `times` requests
+// to each, when given — and hands every other request to the offline guard.
+// Returns the live request count per endpoint.
+async function failEndpoints(page: Page, names: string[], failure: Failure, times = Infinity) {
+  const hits: Record<string, number> = {};
+  await page.route((url) => url.pathname.startsWith('/api/'), async (route) => {
+    const name = new URL(route.request().url()).pathname.slice('/api/'.length);
+    hits[name] = (hits[name] || 0) + 1;
+    if (!names.includes(name) || hits[name] > times) return route.fallback();
+    if (failure === 'drop') return route.abort('connectionreset');
+    return route.fulfill({
+      status: failure.status,
+      contentType: 'application/json',
+      body: JSON.stringify(failure.body || {}),
+    });
+  });
+  return hits;
+}
+
+// Runs the search and waits until the page has finished with every response
+// (retries included), whatever it ended up rendering.
+async function searchSettled(page: Page) {
+  await page.goto('/');
+  await page.locator('#device-input').fill(DEVICE);
+  await page.locator('#search-btn').click();
+  await expect(page.locator('#search-btn')).toBeEnabled();
+  await expect(page.locator('#results .skeleton-note')).toHaveCount(0);
+}
+
+const UNAVAILABLE = '.section-unavailable';
+const UNAVAILABLE_TEXT = 'This section is temporarily unavailable.';
+const TREND_CARD = '.signal-card .sig-name:has-text("Yearly Trend")';
+const PROBLEMS_CARD = '.signal-card .sig-name:has-text("Top Reported Problems")';
+
+// The section each endpoint feeds. The signal cards come from the dossier
+// first, so a failed /api/signals alone leaves nothing to mark.
+const SECTION_OF: Record<string, string | null> = {
+  dossier: 'Device overview',
+  signals: null,
+  trend: 'Yearly Trend',
+  'failure-modes': 'Top Reported Problems',
+  devices: 'Device Records',
+};
+
+// Everything renders except the section fed by `failed` (none: full page),
+// which shows only its title and the unavailable note.
+async function expectOnlyDegraded(page: Page, failed: string | null) {
+  const title = failed ? SECTION_OF[failed] : null;
+  await expect(page.locator('.auth-card')).toHaveCount(0);
+  await expect(page.locator('.error-card')).toHaveCount(0);
+  if (title) {
+    await expect(page.locator(UNAVAILABLE)).toHaveCount(1);
+    await expect(page.locator(UNAVAILABLE + ' .status')).toHaveText(title);
+    await expect(page.locator(UNAVAILABLE + ' p')).toHaveText(UNAVAILABLE_TEXT);
+  } else {
+    await expect(page.locator(UNAVAILABLE)).toHaveCount(0);
+  }
+  await expect(page.locator('.hero-card')).toHaveCount(failed === 'dossier' ? 0 : 1);
+  await expect(page.locator(SIGNAL_CARD)).toHaveCount(
+    failed === 'dossier' ? fixture('signals').records.length : fixture('dossier').signals.length);
+  await expect(page.locator(TREND_CARD)).toHaveCount(failed === 'trend' ? 0 : 1);
+  await expect(page.locator(PROBLEMS_CARD)).toHaveCount(failed === 'failure-modes' ? 0 : 1);
+  await expect(page.locator('.dev-card')).toHaveCount(failed === 'devices' ? 0 : 1);
+}
+
+// A full-page auth card with `title` and none of the results behind it.
+async function expectFullPage(page: Page, title: string) {
+  await expect(page.locator('.auth-card .status')).toHaveText(title);
+  await expect(page.locator('.hero-card')).toHaveCount(0);
+  await expect(page.locator(SIGNAL_CARD)).toHaveCount(0);
+  await expect(page.locator('.dev-card')).toHaveCount(0);
+  await expect(page.locator(UNAVAILABLE)).toHaveCount(0);
+}
+
+const QUOTA_503 = { status: 503, body: { error: 'quota service unavailable' } };
+
+for (const ep of API_ENDPOINTS) {
+  test('503 on ' + ep + ' (persistent) degrades only that section', async ({ page, pageErrors }) => {
+    await failEndpoints(page, [ep], QUOTA_503);
+    await searchSettled(page);
+    await expectOnlyDegraded(page, ep);
+    expect(pageErrors).toEqual([]);
+  });
+}
+
+test('dropped connection on one endpoint degrades only that section', async ({ page, pageErrors }) => {
+  for (const ep of API_ENDPOINTS) {
+    await page.unrouteAll();
+    await failEndpoints(page, [ep], 'drop');
+    await searchSettled(page);
+    await expectOnlyDegraded(page, ep);
+  }
+  expect(pageErrors).toEqual([]);
+});
+
+test('one-time 503 is retried and fully renders', async ({ page, pageErrors }) => {
+  const hits = await failEndpoints(page, ['devices'], QUOTA_503, 1);
+  await searchSettled(page);
+  await expectOnlyDegraded(page, null);
+  expect(hits['devices']).toBe(2);
+  for (const ep of API_ENDPOINTS.filter((e) => e !== 'devices')) expect(hits[ep], ep).toBe(1);
+  expect(pageErrors).toEqual([]);
+});
+
+test('401 on one endpoint stays full-page', async ({ page }) => {
+  await failEndpoints(page, ['trend'], { status: 401, body: { error: 'missing/invalid token' } });
+  await searchSettled(page);
+  await expectFullPage(page, 'Sign-in required');
+});
+
+test('403 limit stays full-page', async ({ page }) => {
+  await failEndpoints(page, ['trend'], { status: 403, body: { error: 'quota exceeded', resets_at: '2026-10-01T00:00:00Z' } });
+  await searchSettled(page);
+  await expectFullPage(page, 'Search limit reached');
+});
+
+test('403 app_locked stays full-page', async ({ page }) => {
+  await failEndpoints(page, ['trend'], { status: 403, body: { reason: 'app_locked' } });
+  await searchSettled(page);
+  await expectFullPage(page, 'Not included in your plan');
+});
+
+test('503 on all five stays full-page', async ({ page }) => {
+  await failEndpoints(page, API_ENDPOINTS, QUOTA_503);
+  await searchSettled(page);
+  await expectFullPage(page, 'Temporarily unavailable');
+});
+
+test('502 is not retried', async ({ page, pageErrors }) => {
+  const hits = await failEndpoints(page, ['trend'], { status: 502, body: { error: 'upstream data source failed' } });
+  await searchSettled(page);
+  await expectOnlyDegraded(page, 'trend');
+  expect(hits['trend']).toBe(1);
+  expect(pageErrors).toEqual([]);
+});
