@@ -19,6 +19,11 @@ func paramsForSearch(q Query) url.Values {
 	if q.Skip > 0 {
 		v.Set("skip", strconv.Itoa(q.Skip))
 	}
+	// Without sort, openFDA returns index order, so a page's max date is not
+	// the newest record (verified live 2026-09-29: sort=<date field>:desc → 200).
+	if q.Sort != "" {
+		v.Set("sort", q.Sort)
+	}
 	return v
 }
 
