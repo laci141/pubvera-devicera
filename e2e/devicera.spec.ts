@@ -133,6 +133,12 @@ test('smoke: pacemaker search renders hero, signals and device table', async ({ 
   await expect(page.locator('h2.section', { hasText: 'Device Records' })).toHaveText(
     '📇 Device Records (' + devices.records.length + ')');
   await expect(page.locator(MAIN_ROWS)).toHaveCount(strongRecords(devices).length);
+  // The category search fetched fewer records than it matched: the meta line
+  // says so, so a device past the first page is not read as absent.
+  expect(devices.fetched_category).toBeLessThan(devices.total_category);
+  await expect(page.locator('.dev-card .meta').first()).toContainText(
+    'category search: first ' + devices.fetched_category.toLocaleString('en-US') +
+    ' of ' + devices.total_category.toLocaleString('en-US'));
   await expect(page.locator(SIGNAL_CARD)).toHaveCount(dossier.signals.length);
 
   // The locally served spreadsheet library loaded (SRI matched) and exports.

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -672,10 +673,12 @@ func udiRaw(di, brand string, codes ...string) map[string]any {
 	}
 }
 
-// serveDevices runs handleDevices end to end: the brand leg from a fake UDI
-// source, the product-category leg from a local stand-in for api.fda.gov.
-// Returns the response records keyed by UDI.
-func serveDevices(t *testing.T, query string, brand, category []map[string]any) map[string]map[string]any {
+// devicesResponse runs handleDevices end to end: the brand leg from a fake UDI
+// source, the product-category leg from a local stand-in for api.fda.gov that,
+// like openFDA, returns at most `limit` of the category records while
+// reporting all of them in meta.results.total. Returns the decoded response
+// and the limit the handler asked the category leg for.
+func devicesResponse(t *testing.T, query string, brand, category []map[string]any) (map[string]any, string) {
 	t.Helper()
 	recs := make([]sources.RawRecord, 0, len(brand))
 	for _, raw := range brand {
@@ -684,11 +687,17 @@ func serveDevices(t *testing.T, query string, brand, category []map[string]any) 
 	withSources(t, map[string]sources.Source{
 		"openfda_device_udi": fakeSource{name: "openfda_device_udi", id: "public_device_record_key", recs: recs},
 	})
+	var gotLimit string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotLimit = r.URL.Query().Get("limit")
+		page := category
+		if n, err := strconv.Atoi(gotLimit); err == nil && n < len(page) {
+			page = page[:n]
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"meta":    map[string]any{"results": map[string]any{"total": len(category)}},
-			"results": category,
+			"results": page,
 		})
 	}))
 	t.Cleanup(upstream.Close)
@@ -701,17 +710,94 @@ func serveDevices(t *testing.T, query string, brand, category []map[string]any) 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
 	}
-	var body struct {
-		Records []map[string]any `json:"records"`
-	}
+	var body map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
+	return body, gotLimit
+}
+
+// serveDevices is devicesResponse with the records keyed by UDI.
+func serveDevices(t *testing.T, query string, brand, category []map[string]any) map[string]map[string]any {
+	t.Helper()
+	body, _ := devicesResponse(t, query, brand, category)
 	byUDI := map[string]map[string]any{}
-	for _, r := range body.Records {
+	for _, r := range asMaps(body["records"]) {
 		byUDI[str(r["udi"])] = r
 	}
 	return byUDI
+}
+
+// letterName spells i in letters only, so the size/model-number noise filter
+// in normalizeDeviceName cannot strip it and fold distinct test rows together.
+func letterName(i int) string {
+	s := ""
+	for {
+		s = string(rune('a'+i%26)) + s
+		i = i/26 - 1
+		if i < 0 {
+			return s
+		}
+	}
+}
+
+// The category leg asks openFDA for 1000 records (the endpoint's maximum per
+// search request), not 100: at 100, "pacemaker" (2,380 category matches)
+// missed ACCOLADE, Serena CRT-P and ANTHEM CRT-P. fetched_category reports how
+// many were actually fetched, next to the upstream total.
+func TestDevicesCategoryLegFetches1000(t *testing.T) {
+	category := make([]map[string]any, 0, 2380)
+	for i := range 2380 {
+		raw := udiRaw(fmt.Sprintf("C%04d", i), "Model "+letterName(i), "PNJ", "Leadless Pacemaker")
+		raw["company_name"] = fmt.Sprintf("Cat Co %d", i)
+		category = append(category, raw)
+	}
+	body, gotLimit := devicesResponse(t, "pacemaker", nil, category)
+	if gotLimit != "1000" {
+		t.Errorf("category leg limit=%q, want \"1000\"", gotLimit)
+	}
+	if got, _ := body["fetched_category"].(float64); got != 1000 {
+		t.Errorf("fetched_category=%v, want 1000", body["fetched_category"])
+	}
+	if got, _ := body["total_category"].(float64); got != 2380 {
+		t.Errorf("total_category=%v, want 2380 (the upstream total, unchanged)", body["total_category"])
+	}
+}
+
+// With a full brand page (100) and a full category page (1000), every row
+// fits under the final cap: the ranking puts weak rows last, so a cap below
+// brand + category silently cut exactly the weak matches.
+func TestDevicesCapKeepsWeakRows(t *testing.T) {
+	brand := make([]map[string]any, 0, 100)
+	for i := range 100 {
+		raw := udiRaw(fmt.Sprintf("B%04d", i), "Pacemaker "+letterName(i))
+		raw["company_name"] = fmt.Sprintf("Brand Co %d", i)
+		brand = append(brand, raw)
+	}
+	category := make([]map[string]any, 0, 1000)
+	for i := range 1000 {
+		codes := []string{"PNJ", "Leadless Pacemaker"}
+		if i%2 == 1 { // weak: the query is only in a secondary product code
+			codes = []string{"DRT", "Monitor, Cardiac", "DRO", "Pacemaker, Cardiac, External Transcutaneous (Non-Invasive)"}
+		}
+		raw := udiRaw(fmt.Sprintf("C%04d", i), "Model "+letterName(i), codes...)
+		raw["company_name"] = fmt.Sprintf("Cat Co %d", i)
+		category = append(category, raw)
+	}
+	body, _ := devicesResponse(t, "pacemaker", brand, category)
+	recs := asMaps(body["records"])
+	weak := 0
+	for _, r := range recs {
+		if str(r["match_strength"]) == "weak" {
+			weak++
+		}
+	}
+	if len(recs) != 1100 {
+		t.Errorf("records=%d, want 1100 (100 brand + 1000 category, none folded)", len(recs))
+	}
+	if weak != 500 {
+		t.Errorf("weak rows=%d, want 500 — the cap cut weak matches", weak)
+	}
 }
 
 // A record the category search found only through a non-first product code

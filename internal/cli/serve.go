@@ -972,7 +972,10 @@ func handleDevices(w http.ResponseWriter, r *http.Request) {
 	}()
 	go func() {
 		defer wg.Done()
-		catRecs, catTotal, catErr = udiCategorySearch(r.Context(), device, 100)
+		// 1000 is openFDA's maximum limit for one search request; at 100 the
+		// category leg missed real devices ("pacemaker": 2,380 matches, and
+		// ACCOLADE, Serena CRT-P and ANTHEM CRT-P sat past the first 100).
+		catRecs, catTotal, catErr = udiCategorySearch(r.Context(), device, 1000)
 	}()
 	wg.Wait()
 	if brandErr != nil && catErr != nil {
@@ -988,17 +991,20 @@ func handleDevices(w http.ResponseWriter, r *http.Request) {
 	for _, raw := range catRecs {
 		catRows = append(catRows, annotateDeviceMatch(deviceRow(raw), raw, device))
 	}
-	rows, dups, folded := mergeDeviceRows(brandRows, catRows, device, 100)
+	// Cap = brand page (100) + category page (1000): every fetched row fits, so
+	// the cut can never drop the weak matches the ranking puts last.
+	rows, dups, folded := mergeDeviceRows(brandRows, catRows, device, 1100)
 
 	resp := map[string]any{
-		"records":        rows,
-		"count":          len(rows),
-		"total":          brandTotal + catTotal - dups,
-		"total_brand":    brandTotal,
-		"total_category": catTotal,
-		"folded_similar": folded,
-		"note":           "GUDID device records via openFDA device/udi; union of a brand-name/UDI-DI search and an FDA product-category search, deduplicated by UDI (total is approximate when the sets overlap beyond the fetched pages); near-identical rows from one company's product line are folded into a single row carrying similar_folded, and rows are ranked by structural relevance (not by device class) before the page is cut; match_strength is strong when the query is in the device name or the shown FDA category and weak when the record matched only through a secondary FDA product code, which match_reason names; registration data may be incomplete or delayed",
-		"disclaimer":     cliutil.Disclaimer,
+		"records":          rows,
+		"count":            len(rows),
+		"total":            brandTotal + catTotal - dups,
+		"total_brand":      brandTotal,
+		"total_category":   catTotal,
+		"fetched_category": len(catRecs),
+		"folded_similar":   folded,
+		"note":             "GUDID device records via openFDA device/udi; union of a brand-name/UDI-DI search (first 100 records) and an FDA product-category search (first 1,000 records, openFDA's per-request maximum; fetched_category says how many were fetched out of total_category), deduplicated by UDI (total is approximate when the sets overlap beyond the fetched pages); near-identical rows from one company's product line are folded into a single row carrying similar_folded, and rows are ranked by structural relevance (not by device class); the row cap (1,100) holds every fetched record, so no match is cut; match_strength is strong when the query is in the device name or the shown FDA category and weak when the record matched only through a secondary FDA product code, which match_reason names; registration data may be incomplete or delayed",
+		"disclaimer":       cliutil.Disclaimer,
 	}
 	var partial []string
 	if brandErr != nil {
