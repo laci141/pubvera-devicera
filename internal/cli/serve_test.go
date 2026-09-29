@@ -844,7 +844,7 @@ func TestDevicesBrandNameHitIsStrong(t *testing.T) {
 	}, nil)
 
 	for udi, wantReason := range map[string]string{
-		"PACK-1":   "Brand name",
+		"PACK-1":   "Name contains the query; FDA category does not",
 		"NETECH-1": "Brand name + FDA category",
 	} {
 		r := rows[udi]
@@ -859,6 +859,67 @@ func TestDevicesBrandNameHitIsStrong(t *testing.T) {
 		}
 		if got := str(r["matched_on"]); got != "Brand name" {
 			t.Errorf("%s matched_on=%q — existing field must be unchanged", udi, got)
+		}
+	}
+}
+
+// FDA names many categories in the plural ("Stents, Drains And Dilators For
+// The Biliary Ducts"). A real biliary stent the category search found must
+// rank above a row that only carries the word in its brand name — live, the
+// singular-only word match put 19 such stents below "Esophageal Stent".
+func TestDevicesPluralCategoryOutranksNameOnly(t *testing.T) {
+	body, _ := devicesResponse(t, "stent",
+		[]map[string]any{udiRaw("ESO-1", "Esophageal Stent", "ESW", "Prosthesis, Esophageal")},
+		[]map[string]any{udiRaw("BIL-1", "Protege GPS", "FGE", "Stents, Drains And Dilators For The Biliary Ducts")},
+	)
+	pos := map[string]int{}
+	for i, r := range asMaps(body["records"]) {
+		pos[str(r["udi"])] = i
+	}
+	bil, okB := pos["BIL-1"]
+	eso, okE := pos["ESO-1"]
+	if !okB || !okE {
+		t.Fatalf("missing rows: %v", pos)
+	}
+	if bil > eso {
+		t.Errorf("biliary stent at %d, name-only Esophageal Stent at %d — the category-confirmed row must rank first", bil, eso)
+	}
+}
+
+// "Automated External Defibrillators (Non-Wearable)" carries the query in
+// the plural; it earns the full +4 category term, the same as the singular.
+func TestDeviceRowScorePluralCategory(t *testing.T) {
+	row := map[string]any{
+		"device_name":      "R SERIES",
+		"product_category": "Automated External Defibrillators (Non-Wearable)",
+		"matched_on":       "Product category",
+	}
+	if got := deviceRowScore(row, "defibrillator"); got != 5 {
+		t.Errorf("score=%d, want 5 (+4 full category credit, +1 category leg)", got)
+	}
+}
+
+// A strong row whose name carries the query but whose shown category and
+// product codes do not says so in match_reason. A later product code that
+// carries the query keeps the plain "Brand name" reason.
+func TestDevicesNameOnlyReason(t *testing.T) {
+	rows := serveDevices(t, "stent", []map[string]any{
+		udiRaw("ESO-1", "Esophageal Stent", "ESW", "Prosthesis, Esophageal"),
+		udiRaw("URO-1", "Pediatric Ureteral Stent", "KNY", "Accessories, Catheter, G-U", "FAD", "Stent, Ureteral"),
+	}, nil)
+	for udi, wantReason := range map[string]string{
+		"ESO-1": "Name contains the query; FDA category does not",
+		"URO-1": "Brand name",
+	} {
+		r := rows[udi]
+		if r == nil {
+			t.Fatalf("%s missing from response: %v", udi, rows)
+		}
+		if got := str(r["match_strength"]); got != "strong" {
+			t.Errorf("%s match_strength=%q, want \"strong\"", udi, got)
+		}
+		if got := str(r["match_reason"]); got != wantReason {
+			t.Errorf("%s match_reason=%q, want %q", udi, got, wantReason)
 		}
 	}
 }
