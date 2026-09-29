@@ -916,6 +916,7 @@
        before sign-in existed. Wired up by the module script at the end. -->
   <div class="auth-bar" id="auth-bar" hidden>
     <span class="auth-email" id="auth-email" hidden></span>
+    <span class="auth-email" id="auth-unavailable" hidden>Sign-in is unavailable: a required script did not load.</span>
     <button type="button" class="auth-btn auth-btn-primary" id="auth-signin-btn" hidden>Sign in with Google</button>
     <button type="button" class="auth-btn" id="auth-signout-btn" hidden>Sign out</button>
   </div>
@@ -1761,7 +1762,11 @@
     var d = resp.data || {};
     var title = '', body = '', offerSignIn = false;
 
-    if (resp.status === 401) {
+    if (resp.status === 401 && window.pubveraAuth && window.pubveraAuth.unavailable) {
+      // The Supabase script did not load, so a sign-in prompt could not work.
+      title = 'Sign-in required';
+      body = 'Sign-in is unavailable: a required script did not load.';
+    } else if (resp.status === 401) {
       // The raw error ("missing/invalid token") tells the user nothing they can
       // act on, and the remedy is always the same, so it is not shown.
       title = 'Sign-in required';
@@ -3238,10 +3243,32 @@
     // Either field empty: skip Supabase entirely.
     if (!url || !key) return;
 
-    // Dynamic import, not a static one: a static import runs before the fetch
-    // above, so an unconfigured page would still pay to download the library.
-    const { createClient } = await import('https://esm.sh/@supabase/supabase-js@2.117.0?deps=iceberg-js@0.8.1');
-    const sb = createClient(url, key);
+    // supabase-js 2.117.0, UMD build (global `supabase`), pinned with SRI.
+    // Injected only here, after the config check, so an unconfigured page
+    // still downloads nothing. Not import() from esm.sh: a dynamic import
+    // cannot carry an integrity hash, and the esm.sh entry was a stub pulling
+    // a 16-module graph that included unversioned polyfills (/node/*.mjs).
+    // To upgrade: change the version in the URL, recompute the sha384
+    //   openssl dgst -sha384 -binary supabase.js | openssl base64 -A
+    // and bump @supabase/supabase-js in e2e/package.json to the same version.
+    try {
+      await new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.0/dist/umd/supabase.js';
+        s.integrity = 'sha384-xPW3QHswsICVC2mW6BFNwMbhpLkbZ133fKOhxNx3QGGgAOJfL3O9t8r2aWn1aez6';
+        s.crossOrigin = 'anonymous';
+        s.onload = resolve;
+        s.onerror = reject; // network failure or integrity mismatch
+        document.head.appendChild(s);
+      });
+    } catch (e) {
+      // Say so, instead of a sign-in prompt that cannot work.
+      window.pubveraAuth.unavailable = true;
+      document.getElementById('auth-unavailable').hidden = false;
+      bar.hidden = false;
+      return;
+    }
+    const sb = window.supabase.createClient(url, key);
     window.sb = sb;
 
     window.pubveraAuth = {
