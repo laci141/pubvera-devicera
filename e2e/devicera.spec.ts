@@ -10,6 +10,10 @@ const API_ENDPOINTS = ['dossier', 'signals', 'trend', 'failure-modes', 'devices'
 const XLSX_URL = 'https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js';
 const XLSX_LOCAL = require.resolve('xlsx-js-style/dist/xlsx.bundle.js');
 
+// Loaded by the page (with SRI) only when /config.json carries a Supabase config.
+const SUPABASE_UMD_URL = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.0/dist/umd/supabase.js';
+const SUPABASE_UMD_LOCAL = require.resolve('@supabase/supabase-js/dist/umd/supabase.js');
+
 // The signal types the attention index averages. Mirrors signalDirections in
 // internal/intelligence/12-synthesis.go, kept here on purpose rather than read
 // from the page, so a page that miscounts cannot also redefine the answer.
@@ -62,7 +66,7 @@ type Harness = {
 //  - the page and anything else on the local server comes from the real binary;
 //  - /config.json and /api/* are answered only from fixtures, and an /api path
 //    or device without a fixture is a test failure, never a live call;
-//  - the XLSX CDN script is served from node_modules;
+//  - the XLSX and Supabase CDN scripts are served from node_modules;
 //  - every other non-local request is aborted and fails the test.
 const test = base.extend<Harness>({
   pageErrors: async ({ page }, use) => {
@@ -97,10 +101,10 @@ const test = base.extend<Harness>({
         }
         return route.continue();
       }
-      if (url.href === XLSX_URL) {
+      if (url.href === XLSX_URL || url.href === SUPABASE_UMD_URL) {
         // crossorigin="anonymous" + SRI on the tag: the response needs CORS.
         return route.fulfill({
-          path: XLSX_LOCAL,
+          path: url.href === XLSX_URL ? XLSX_LOCAL : SUPABASE_UMD_LOCAL,
           contentType: 'application/javascript',
           headers: { 'Access-Control-Allow-Origin': '*' },
         });
@@ -457,6 +461,78 @@ test('503 on all five stays full-page', async ({ page }) => {
   await failEndpoints(page, API_ENDPOINTS, QUOTA_503);
   await searchSettled(page);
   await expectFullPage(page, 'Temporarily unavailable');
+});
+
+// Sign-in. The fixture config is empty, so these tests hand the page a
+// Supabase config and an unexpired session in localStorage; supabase-js reads
+// that session without a network call, so nothing reaches *.supabase.co.
+const SUPA_REF = 'abcdefghijklmnopqrst';
+const SIGNIN_UNAVAILABLE = 'Sign-in is unavailable: a required script did not load.';
+
+async function configureAuth(page: Page): Promise<string[]> {
+  await page.route((url) => url.pathname === '/config.json', (route) =>
+    route.fulfill({ json: { supabase_url: `https://${SUPA_REF}.supabase.co`, supabase_anon_key: 'pk_e2e' } }));
+  const session = {
+    access_token: 'E2E.ACCESS.TOKEN', refresh_token: 'r', token_type: 'bearer', expires_in: 3600,
+    expires_at: Math.floor(Date.now() / 1000) + 3600,
+    user: { id: 'u1', email: 'tester@example.com', aud: 'authenticated' },
+  };
+  await page.addInitScript(([k, v]) => localStorage.setItem(k, v),
+    [`sb-${SUPA_REF}-auth-token`, JSON.stringify(session)]);
+  // The Authorization header of every /api request, '' when absent.
+  const auth: string[] = [];
+  page.on('request', (r) => {
+    if (new URL(r.url()).pathname.startsWith('/api/')) auth.push(r.headers()['authorization'] || '');
+  });
+  return auth;
+}
+
+test('sign-in: configured page with a session sends Bearer on every /api call', async ({ page, pageErrors }) => {
+  const auth = await configureAuth(page);
+  await search(page);
+  await expect(page.locator('#auth-bar')).toBeVisible();
+  await expect(page.locator('#auth-email')).toHaveText('tester@example.com');
+  expect(auth).toHaveLength(API_ENDPOINTS.length);
+  for (const h of auth) expect(h).toBe('Bearer E2E.ACCESS.TOKEN');
+  expect(pageErrors).toEqual([]);
+});
+
+// Script failed: the bar carries only the message, no session UI, no token,
+// and the 401 card says why instead of offering a sign-in that cannot work.
+async function expectSignInUnavailable(page: Page, auth: string[]) {
+  // Caddy's forward_auth stand-in: no token, 401.
+  await page.route((url) => url.pathname.startsWith('/api/'), (route) =>
+    route.request().headers()['authorization']
+      ? route.fallback()
+      : route.fulfill({ status: 401, json: { error: 'missing/invalid token' } }));
+  await page.goto('/');
+  await expect(page.locator('#auth-bar')).toBeVisible();
+  await expect(page.locator('#auth-bar')).toHaveJSProperty('innerText', SIGNIN_UNAVAILABLE);
+  await expect(page.locator('#auth-email')).toBeHidden();
+  await expect(page.locator('#auth-signin-btn')).toBeHidden();
+  await expect(page.locator('#auth-signout-btn')).toBeHidden();
+  await page.locator('#device-input').fill(DEVICE);
+  await page.locator('#search-btn').click();
+  await expect(page.locator('.auth-card p')).toHaveText(SIGNIN_UNAVAILABLE);
+  await expect(page.locator('.auth-card button')).toHaveCount(0);
+  expect(auth.length).toBeGreaterThan(0);
+  for (const h of auth) expect(h).not.toContain('Bearer');
+}
+
+test('sign-in: tampered Supabase script is refused by SRI', async ({ page, pageErrors }) => {
+  const auth = await configureAuth(page);
+  const body = fs.readFileSync(SUPABASE_UMD_LOCAL, 'utf8') + '\n/* tampered */\n';
+  await page.route(SUPABASE_UMD_URL, (route) => route.fulfill({
+    body, contentType: 'application/javascript', headers: { 'Access-Control-Allow-Origin': '*' } }));
+  await expectSignInUnavailable(page, auth);
+  expect(pageErrors).toEqual([]);
+});
+
+test('sign-in: Supabase script that fails to load explains itself', async ({ page, pageErrors }) => {
+  const auth = await configureAuth(page);
+  await page.route(SUPABASE_UMD_URL, (route) => route.abort('failed'));
+  await expectSignInUnavailable(page, auth);
+  expect(pageErrors).toEqual([]);
 });
 
 test('502 is not retried', async ({ page, pageErrors }) => {
