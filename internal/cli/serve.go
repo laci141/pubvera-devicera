@@ -684,7 +684,9 @@ func normalizeDeviceName(s string) string {
 //	    one signal a brand name cannot fake — the strongest evidence available.
 //	    Matching per word, not as a substring, is what lets "insulin pump" score
 //	    "Alternate Controller Enabled Insulin Infusion Pump", which is the
-//	    category the real pumps carry.
+//	    category the real pumps carry. A word also counts in its plural (+s,
+//	    +es): FDA writes "Stents, Drains And Dilators For The Biliary Ducts"
+//	    and "Automated External Defibrillators (Non-Wearable)".
 //	+2  some but not all query words appear in the category: partial support.
 //	+3  matched_on == "Both": the record was independently returned by the
 //	    brand-name and the product-category search. Two agreeing legs.
@@ -711,7 +713,7 @@ func deviceRowScore(row map[string]any, query string) int {
 	}
 	hits := 0
 	for _, w := range queryWords {
-		if categoryWords[w] {
+		if categoryWords[w] || categoryWords[w+"s"] || categoryWords[w+"es"] {
 			hits++
 		}
 	}
@@ -763,7 +765,9 @@ func queryTermIn(text, query string) bool {
 // annotateDeviceMatch records why a GUDID record matched the query, as
 // match_strength and match_reason on its row. Strong: the query is in the
 // device name or in the category the table shows (product_codes[0]), or it is
-// the record's UDI-DI. Weak: the category search found the record only
+// the record's UDI-DI. A strong row whose query is only in the name — not in
+// the shown category nor in any product code — says so ("Shoulder Pacemaker"
+// is a muscle stimulator). Weak: the category search found the record only
 // through a later product code (Zoll's ECG cable lists "Pacemaker, Cardiac,
 // External Transcutaneous" fourth); the reason names that code, because the
 // row itself never shows it.
@@ -774,6 +778,8 @@ func annotateDeviceMatch(row, raw map[string]any, query string) map[string]any {
 	switch {
 	case inName && inCategory:
 		reason = "Brand name + FDA category"
+	case inName && !anyProductCodeHas(raw, query):
+		reason = "Name contains the query; FDA category does not"
 	case inName && str(raw["brand_name"]) == "":
 		reason = "Device name" // no brand: the name is the clipped description
 	case inName:
@@ -800,13 +806,7 @@ func annotateDeviceMatch(row, raw map[string]any, query string) map[string]any {
 	row["match_reason"] = "openFDA match; query not found in the name or FDA categories"
 	pcs := asMaps(raw["product_codes"])
 	for i := 1; i < len(pcs); i++ {
-		name := ""
-		if of, ok := pcs[i]["openfda"].(map[string]any); ok {
-			name = str(of["device_name"])
-		}
-		if name == "" {
-			name = str(pcs[i]["name"])
-		}
+		name := productCodeName(pcs[i])
 		if !queryTermIn(name, query) {
 			continue
 		}
@@ -819,6 +819,28 @@ func annotateDeviceMatch(row, raw map[string]any, query string) map[string]any {
 		break
 	}
 	return row
+}
+
+// productCodeName is one product code's FDA name: the openfda device_name,
+// else the code's own name.
+func productCodeName(pc map[string]any) string {
+	if of, ok := pc["openfda"].(map[string]any); ok {
+		if name := str(of["device_name"]); name != "" {
+			return name
+		}
+	}
+	return str(pc["name"])
+}
+
+// anyProductCodeHas reports whether any product code on the record carries
+// the query in its name.
+func anyProductCodeHas(raw map[string]any, query string) bool {
+	for _, pc := range asMaps(raw["product_codes"]) {
+		if queryTermIn(productCodeName(pc), query) {
+			return true
+		}
+	}
+	return false
 }
 
 // deviceRowDetail counts the populated, informative fields of a row. Used only

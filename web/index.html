@@ -2785,7 +2785,7 @@
     results.appendChild(heading);
     var desc = document.createElement('div');
     desc.className = 'group-desc';
-    desc.textContent = 'Matched on brand name and FDA product category, ranked by how much structural evidence supports the match (category hit, both searches agreeing, a name that is more than the query itself; FDA device class plays no part). Records whose name and shown category do not contain the search term — found only through another FDA product code on the record — are listed separately under Weak matches. One company’s near-identical registrations are folded into a single row — see the Similar Folded column. Device names vary by manufacturer, so a major brand may not appear even when it exists — verify at AccessGUDID before concluding a device is absent. Click a column header to sort.';
+    desc.textContent = 'Matched on brand name and FDA product category, ranked by how much structural evidence supports the match (category hit, both searches agreeing, a name that is more than the query itself; FDA device class plays no part). Records whose name and shown category do not contain the search term — found only through another FDA product code on the record — are listed separately under Weak matches. Records whose name contains the search term but whose FDA category does not are ranked after every category-confirmed record. One company’s near-identical registrations are folded into a single row — see the Similar Folded column. Device names vary by manufacturer, so a major brand may not appear even when it exists — verify at AccessGUDID before concluding a device is absent. Click a column header to sort.';
     results.appendChild(desc);
 
     var card = document.createElement('div');
