@@ -760,6 +760,13 @@
   .auth-card p { color: var(--ink-2); font-size: 0.9rem; line-height: 1.55; }
   .auth-card .auth-btn { margin-top: 0.85rem; font-size: 0.85rem; padding: 8px 16px; }
 
+  /* One section whose request failed while the rest of the search rendered.
+     Same quiet treatment as the auth card: nothing the user did wrong. */
+  .section-unavailable { padding: 1rem 1.2rem; margin-top: 12px; }
+  .signals-grid .section-unavailable { margin-top: 0; }
+  .section-unavailable .status { font-weight: 700; margin-bottom: 4px; color: var(--ink); }
+  .section-unavailable p { color: var(--ink-2); font-size: 0.9rem; }
+
   /* ---- Skeleton loading ---- */
   .skeleton-note {
     display: flex;
@@ -1541,20 +1548,29 @@
     setLoading(true);
     showLoadingState();
 
-    Promise.all([
-      fetchJson('/api/dossier?device=' + enc),
-      fetchJson('/api/signals?device=' + enc),
-      fetchJson('/api/trend?device=' + enc),
-      fetchJson('/api/failure-modes?device=' + enc),
-      fetchJson('/api/devices?device=' + enc)
-    ]).then(function (pair) {
+    Promise.allSettled([
+      fetchWithRetry('/api/dossier?device=' + enc),
+      fetchWithRetry('/api/signals?device=' + enc),
+      fetchWithRetry('/api/trend?device=' + enc),
+      fetchWithRetry('/api/failure-modes?device=' + enc),
+      fetchWithRetry('/api/devices?device=' + enc)
+    ]).then(function (settled) {
+      // Each call succeeds or fails on its own. One that got no HTTP answer
+      // at all becomes status 0, so it costs only its own section.
+      var pair = settled.map(function (s) {
+        return s.status === 'fulfilled' ? s.value : { ok: false, status: 0, data: {} };
+      });
       setLoading(false);
       clearChildren(results);
-      // An auth or quota rejection hits all five requests; report it once and
-      // render nothing else — there is no data behind it to show.
+      // A sign-in or plan rejection applies to the whole account: report it
+      // once and render nothing else.
       var rejected = authRejection(pair);
       if (rejected) {
         renderAuthError(rejected);
+        return;
+      }
+      if (pair.every(function (r) { return r.status === 0; })) {
+        renderNetworkError();
         return;
       }
       trendResp = pair[2];
@@ -1564,11 +1580,41 @@
       lastData.problems = problemsResp.ok ? (problemsResp.data.records || null) : null;
       lastData.signals = pair[1].ok ? (pair[1].data.records || null) : null;
       renderResults(pair[0], pair[1]);
-    }).catch(function (err) {
-      setLoading(false);
-      clearChildren(results);
-      renderNetworkError(err);
     });
+  }
+
+  // One retry, 1 s later, for a 503 (the quota check in front of /api/*
+  // failed, so the data endpoint never ran) or a call with no HTTP answer.
+  // The 503s in the auth logs were sub-second: the other calls of the same
+  // search got 200 within the same second. A 502 or any other status is never
+  // retried — it means the Go handler already ran a slow upstream query, and
+  // running it again doubles the load for a likely repeat of the failure.
+  var RETRY_DELAY_MS = 1000;
+  function fetchWithRetry(url) {
+    function retry() {
+      return new Promise(function (resolve) {
+        setTimeout(resolve, RETRY_DELAY_MS);
+      }).then(function () {
+        return fetchJson(url);
+      });
+    }
+    return fetchJson(url).then(function (r) {
+      return r.status === 503 ? retry() : r;
+    }, retry);
+  }
+
+  // Title plus a short note, in place of a section whose request failed.
+  function sectionUnavailable(title, extraClass) {
+    var card = document.createElement('div');
+    card.className = 'glass section-unavailable' + (extraClass ? ' ' + extraClass : '');
+    var status = document.createElement('div');
+    status.className = 'status';
+    status.textContent = title;
+    card.appendChild(status);
+    var p = document.createElement('p');
+    p.textContent = 'This section is temporarily unavailable.';
+    card.appendChild(p);
+    return card;
   }
 
   function setLoading(isLoading) {
@@ -1664,7 +1710,7 @@
     });
   }
 
-  function renderNetworkError(err) {
+  function renderNetworkError() {
     var card = document.createElement('div');
     card.className = 'glass error-card';
     var status = document.createElement('div');
@@ -1677,39 +1723,28 @@
     results.appendChild(card);
   }
 
-  function renderApiError(label, resp) {
-    var card = document.createElement('div');
-    card.className = 'glass error-card';
-    var status = document.createElement('div');
-    status.className = 'status';
-    status.textContent = label + ' — HTTP ' + resp.status;
-    var msg = document.createElement('div');
-    var errText = (resp.data && (resp.data.error || resp.data.Error)) || 'Unknown error.';
-    msg.textContent = errText;
-    card.appendChild(status);
-    card.appendChild(msg);
-    if (resp.data && (resp.data.disclaimer || resp.data.Disclaimer)) {
-      var disc = document.createElement('div');
-      disc.className = 'api-disclaimer';
-      disc.textContent = resp.data.disclaimer || resp.data.Disclaimer;
-      card.appendChild(disc);
-    }
-    results.appendChild(card);
-  }
-
   // ---- Auth and quota rejections ----
   //
   // 401/403/503 come from the auth and quota layer in front of /api/*, not from
-  // the data endpoints, so they reject every one of the five parallel requests
-  // at once. They are reported as ONE card explaining what happened, instead of
-  // five copies of "HTTP 401" in the red error box. Every other failure keeps
-  // the existing per-endpoint behaviour.
+  // the data endpoints. Each of the five requests passes that layer on its own,
+  // so they do NOT necessarily fail together: auth logs showed 3 incidents in 7
+  // days, each with 1 of 5 requests getting 503 and the rest 200.
+  //  - 401 and 403 describe the account (not signed in, plan limit, app not in
+  //    the plan): one is enough, and it is reported as ONE full-page card.
+  //  - 503 only says the quota check failed for that request. It takes the full
+  //    page only when all five got it; otherwise its section degrades alone.
+  // Every other failure is handled per section.
   function authRejection(responses) {
-    for (var i = 0; i < responses.length; i++) {
-      var r = responses[i];
-      if (r && !r.ok && (r.status === 401 || r.status === 403 || r.status === 503)) return r;
+    function first(status) {
+      for (var i = 0; i < responses.length; i++) {
+        if (responses[i] && responses[i].status === status) return responses[i];
+      }
+      return null;
     }
-    return null;
+    var rejected = first(401) || first(403);
+    if (rejected) return rejected;
+    var all503 = responses.every(function (r) { return r && r.status === 503; });
+    return all503 ? responses[0] : null;
   }
 
   // resets_at arrives as an ISO timestamp; show it in the reader's own locale
@@ -1841,7 +1876,7 @@
       (signalsResp.ok && signalsResp.data.meta) || null);
 
     if (!dossierResp.ok) {
-      renderApiError('Dossier lookup failed', dossierResp);
+      results.appendChild(sectionUnavailable('Device overview'));
     } else {
       anyOk = true;
       renderBentoTop(dossierResp.data, signalsResp.ok ? signalsResp.data : null);
@@ -1849,16 +1884,15 @@
 
     renderDevicesSection();
 
-    if (!signalsResp.ok && !dossierResp.ok) {
-      renderApiError('Signals lookup failed', signalsResp);
-    } else {
+    // With both down there are no signal cards to draw; the Device overview
+    // note above already says the search came back incomplete.
+    if (signalsResp.ok || dossierResp.ok) {
       anyOk = true;
       // Prefer the dossier's signal structs (full reasoning); fall back to the
       // signals endpoint rows (reasoning clipped server-side).
       var source = dossierSignals.length ? dossierSignals
         : ((signalsResp.ok && (signalsResp.data.records || [])) || []);
       renderSignalGroups(source);
-      if (!signalsResp.ok) renderApiError('Signals lookup failed', signalsResp);
     }
 
     var disclaimer = null;
@@ -2255,7 +2289,8 @@
 
   // ---- Yearly Trend card (from /api/trend) ----
   function trendCard() {
-    if (!trendResp || !trendResp.ok) return null;
+    if (!trendResp) return null;
+    if (!trendResp.ok) return sectionUnavailable('Yearly Trend', 'signal-card span2');
     var rows = trendResp.data.records || [];
     if (!rows.length) return null;
 
@@ -2306,7 +2341,8 @@
 
   // ---- Top Reported Problems card (from /api/failure-modes) ----
   function problemsCard() {
-    if (!problemsResp || !problemsResp.ok) return null;
+    if (!problemsResp) return null;
+    if (!problemsResp.ok) return sectionUnavailable('Top Reported Problems', 'signal-card span2');
     var rows = problemsResp.data.records || [];
     if (!rows.length) return null;
 
@@ -2711,7 +2747,11 @@
   }
 
   function renderDevicesSection() {
-    if (!devicesResp || !devicesResp.ok) return;
+    if (!devicesResp) return;
+    if (!devicesResp.ok) {
+      results.appendChild(sectionUnavailable('Device Records'));
+      return;
+    }
     var recs = devicesResp.data.records || [];
     if (!recs.length) return;
 
