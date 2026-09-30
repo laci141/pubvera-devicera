@@ -650,6 +650,68 @@ test('503 on all five stays full-page', async ({ page }) => {
   await expectFullPage(page, 'Temporarily unavailable');
 });
 
+// ---- Several failed /api calls: the trend and problems cards stand alone ----
+//
+// The two cards read only /api/trend and /api/failure-modes. Without signal
+// cards in the Usage & Reports group they get a section of their own.
+
+const USAGE_FALLBACK_HEADING = '📊 Usage & Reports';
+
+// Every section fed by a failed endpoint shows its unavailable note; the
+// trend and problems cards follow their own endpoint only.
+async function expectDegraded(page: Page, failed: string[]) {
+  const titles = failed.map((ep) => SECTION_OF[ep]).filter((t): t is string => !!t);
+  await expect(page.locator('.auth-card')).toHaveCount(0);
+  await expect(page.locator('.error-card')).toHaveCount(0);
+  await expect(page.locator(UNAVAILABLE)).toHaveCount(titles.length);
+  expect((await page.locator(UNAVAILABLE + ' .status').allTextContents()).sort()).toEqual([...titles].sort());
+  for (const p of await page.locator(UNAVAILABLE + ' p').allTextContents()) expect(p).toBe(UNAVAILABLE_TEXT);
+  const has = (ep: string) => failed.includes(ep);
+  await expect(page.locator('.hero-card')).toHaveCount(has('dossier') ? 0 : 1);
+  await expect(page.locator(SIGNAL_CARD)).toHaveCount(
+    has('dossier') && has('signals') ? 0
+      : has('dossier') ? fixture('signals').records.length : fixture('dossier').signals.length);
+  await expect(page.locator(TREND_CARD)).toHaveCount(has('trend') ? 0 : 1);
+  await expect(page.locator(PROBLEMS_CARD)).toHaveCount(has('failure-modes') ? 0 : 1);
+  await expect(page.locator('.dev-card')).toHaveCount(has('devices') ? 0 : 1);
+}
+
+test('503 on dossier + signals keeps the trend and problems cards', async ({ page, pageErrors }) => {
+  await failEndpoints(page, ['dossier', 'signals'], QUOTA_503);
+  await searchSettled(page);
+  await expectDegraded(page, ['dossier', 'signals']);
+  await expect(page.locator('h2.section', { hasText: 'Usage & Reports' })).toHaveText(USAGE_FALLBACK_HEADING);
+  expect(pageErrors).toEqual([]);
+});
+
+test('503 on dossier + signals + trend marks Yearly Trend unavailable on its own', async ({ page, pageErrors }) => {
+  await failEndpoints(page, ['dossier', 'signals', 'trend'], QUOTA_503);
+  await searchSettled(page);
+  await expectDegraded(page, ['dossier', 'signals', 'trend']);
+  await expect(page.locator('h2.section', { hasText: 'Usage & Reports' })).toHaveText(USAGE_FALLBACK_HEADING);
+  expect(pageErrors).toEqual([]);
+});
+
+test('no usage-group signals still shows the trend and problems cards', async ({ page, pageErrors }) => {
+  // The fixtures minus the three Usage & Reports signal types.
+  const USAGE_TYPES = ['SEVERITY', 'VOLUME', 'VOLUME_SHIFT'];
+  const dossier = fixture('dossier');
+  dossier.signals = dossier.signals.filter((s: any) => !USAGE_TYPES.includes(s.signal_type));
+  const signals = fixture('signals');
+  signals.records = signals.records.filter((s: any) => !USAGE_TYPES.includes(s.signal));
+  expect(dossier.signals.length).toBeGreaterThan(0);
+  await page.route((url) => url.pathname === '/api/dossier' || url.pathname === '/api/signals', (route) =>
+    route.fulfill({ json: new URL(route.request().url()).pathname === '/api/dossier' ? dossier : signals }));
+  await searchSettled(page);
+  await expect(page.locator('.auth-card')).toHaveCount(0);
+  await expect(page.locator(UNAVAILABLE)).toHaveCount(0);
+  await expect(page.locator(SIGNAL_CARD)).toHaveCount(dossier.signals.length);
+  await expect(page.locator(TREND_CARD)).toHaveCount(1);
+  await expect(page.locator(PROBLEMS_CARD)).toHaveCount(1);
+  await expect(page.locator('h2.section', { hasText: 'Usage & Reports' })).toHaveText(USAGE_FALLBACK_HEADING);
+  expect(pageErrors).toEqual([]);
+});
+
 // Sign-in. The fixture config is empty, so these tests hand the page a
 // Supabase config and an unexpired session in localStorage; supabase-js reads
 // that session without a network call, so nothing reaches *.supabase.co.
