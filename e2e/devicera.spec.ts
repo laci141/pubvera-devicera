@@ -357,10 +357,10 @@ const ZOLL = [
 const NEW_EXPORT_COLS = ['Model Number', 'Device Description', 'Product Codes', 'First Published'];
 const codesText = (r: any) => r.product_codes.map((p: any) => p.code + ': ' + p.name).join('; ');
 
-async function serveZoll(page: Page) {
+async function serveZoll(page: Page, records: any[] = ZOLL) {
   await page.route((url) => url.pathname === '/api/devices', (route) => route.fulfill({ json: {
-    records: ZOLL, count: ZOLL.length, total: ZOLL.length, total_brand: 0, total_category: ZOLL.length,
-    fetched_category: ZOLL.length, folded_similar: 0,
+    records, count: records.length, total: records.length, total_brand: 0, total_category: records.length,
+    fetched_category: records.length, folded_similar: 0,
   } }));
   await search(page);
 }
@@ -465,6 +465,53 @@ test('every export carries the four new columns right after Match Reason, filter
   await card.locator('.qfilter').fill(ZOLL[0].model_number);
   const filtered = parseCSV(fs.readFileSync((await grab('CSV'))!, 'utf8').replace(/^﻿/, '')).slice(3).filter((r) => r.length > 1);
   expect(filtered.map((r) => r[header.indexOf('UDI')])).toEqual([ZOLL[0].udi]);
+});
+
+// ---- The Weak matches label follows the filters, like "x / y rows" ----
+//
+// ZOLL plus a second weak row that is Class III, so every filter below leaves
+// some but not all weak rows and the label must say "shown / total".
+
+const ZOLL_TWO_WEAK = [...ZOLL, {
+  ...zollRow('00847946009991', '40030021100199010', 'Defibrillator ,MAIN,MAN-2,PACE,CDMK', '2015-03-02', 'DRO', 'weak', 'Secondary FDA code MKJ: ' + PC.MKJ),
+  device_class: 'Class III',
+}];
+const WEAK_TOTAL = ZOLL_TWO_WEAK.filter((r) => r.match_strength === 'weak').length;
+const weakLabel = (n: string) => 'Weak matches (' + n + ') — matched only through a secondary FDA product code';
+
+test('weak label: text filter that hides every weak row reads "0 / N", clearing restores "N"', async ({ page, pageErrors }) => {
+  await serveZoll(page, ZOLL_TWO_WEAK);
+  const section = page.locator(WEAK_SECTION);
+  const filter = page.locator('.dev-card .qfilter');
+  await expect(section.locator('summary')).toHaveText(weakLabel(String(WEAK_TOTAL)));
+
+  await filter.fill(ZOLL[0].model_number); // a strong row
+  await expect(section).toHaveCount(1); // the section stays
+  await expect(section.locator('summary')).toHaveText(weakLabel('0 / ' + WEAK_TOTAL));
+  await expect(section.locator('tbody tr')).toHaveCount(0);
+
+  await filter.fill('');
+  await expect(section.locator('summary')).toHaveText(weakLabel(String(WEAK_TOTAL)));
+  expect(pageErrors).toEqual([]);
+});
+
+test('weak label: text filter to one weak row reads "1 / N"', async ({ page, pageErrors }) => {
+  await serveZoll(page, ZOLL_TWO_WEAK);
+  const section = page.locator(WEAK_SECTION);
+  await page.locator('.dev-card .qfilter').fill(ZOLL[2].model_number);
+  await expect(section.locator('summary')).toHaveText(weakLabel('1 / ' + WEAK_TOTAL));
+  await expect(section.locator('tbody tr')).toHaveCount(1);
+  expect(pageErrors).toEqual([]);
+});
+
+test('weak label: Class III toggle counts the visible weak rows', async ({ page, pageErrors }) => {
+  await serveZoll(page, ZOLL_TWO_WEAK);
+  const section = page.locator(WEAK_SECTION);
+  await page.locator('.dev-card .quick-class3').click();
+  const visible = await section.locator('tbody tr').count();
+  expect(visible).toBe(1);
+  await expect(section.locator('summary')).toHaveText(weakLabel(visible + ' / ' + WEAK_TOTAL));
+  expect(pageErrors).toEqual([]);
 });
 
 // ---- One failed /api call degrades only its own section ----
