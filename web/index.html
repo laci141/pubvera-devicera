@@ -1895,14 +1895,16 @@
 
     // With both down there are no signal cards to draw; the Device overview
     // note above already says the search came back incomplete.
+    var usageDrawn = false;
     if (signalsResp.ok || dossierResp.ok) {
       anyOk = true;
       // Prefer the dossier's signal structs (full reasoning); fall back to the
       // signals endpoint rows (reasoning clipped server-side).
       var source = dossierSignals.length ? dossierSignals
         : ((signalsResp.ok && (signalsResp.data.records || [])) || []);
-      renderSignalGroups(source);
+      usageDrawn = renderSignalGroups(source);
     }
+    if (!usageDrawn) renderUsageFallback();
 
     var disclaimer = null;
     if (dossierResp.ok && (dossierResp.data.disclaimer || dossierResp.data.Disclaimer)) {
@@ -2249,13 +2251,15 @@
     return 'var(--ink-3)';
   }
 
+  // Returns true when it drew the Usage & Reports grid (and with it the trend
+  // and problems cards).
   function renderSignalGroups(records) {
     if (!records.length) {
       var empty = document.createElement('div');
       empty.className = 'inline-msg';
       empty.textContent = 'No signal records returned.';
       results.appendChild(empty);
-      return;
+      return false;
     }
 
     // Bucket the signals into the four groups (unknown types fold into usage).
@@ -2266,6 +2270,7 @@
       (buckets[g] = buckets[g] || []).push(n);
     });
 
+    var usageDrawn = false;
     GROUPS.forEach(function (g) {
       var list = buckets[g.id] || [];
       if (!list.length) return;
@@ -2287,6 +2292,7 @@
       });
       // The two data-endpoint cards live in the Usage & Reports group.
       if (g.id === 'usage') {
+        usageDrawn = true;
         var tc = trendCard();
         if (tc) grid.appendChild(stagger(tc));
         var pc = problemsCard();
@@ -2294,6 +2300,27 @@
       }
       results.appendChild(grid);
     });
+    return usageDrawn;
+  }
+
+  // The trend and problems cards read only their own endpoints. When no
+  // Usage & Reports group was drawn they get a section of their own; with
+  // neither card to show, nothing is drawn.
+  function renderUsageFallback() {
+    var tc = trendCard();
+    var pc = problemsCard();
+    if (!tc && !pc) return;
+
+    var heading = document.createElement('h2');
+    heading.className = 'section';
+    heading.textContent = '📊 Usage & Reports';
+    results.appendChild(heading);
+
+    var grid = document.createElement('div');
+    grid.className = 'signals-grid';
+    if (tc) grid.appendChild(stagger(tc));
+    if (pc) grid.appendChild(stagger(pc));
+    results.appendChild(grid);
   }
 
   // ---- Yearly Trend card (from /api/trend) ----
