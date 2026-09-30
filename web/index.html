@@ -2958,40 +2958,74 @@
       tables.push(weak);
     }
 
-    // Category chips: counts always come from the FULL strong set, so chips
-    // never vanish while the user is typing in the text filter.
-    var chips = buildCategoryChips(strongRows, 8);
-    var catBar = null;
-    if (chips.length > 1) {
-      catBar = elDiv('cat-bar');
+    // Category chips: one bar per table, each built from that table's FULL
+    // row set, so a chip count is exactly the rows it shows on its own and
+    // chips never vanish while the user is typing in the text filter. A chip
+    // filters only its own table (t.category), never the other one.
+    function makeChipBar(t, chips, label) {
+      t.category = null;
+      t.categoryLabel = '';
+      t.chips = chips;
+      if (t.chips.length <= 1) return null;
+      var bar = elDiv('cat-bar');
       var lbl = document.createElement('span');
       lbl.className = 'cat-lbl';
-      lbl.textContent = 'Filter by category:';
-      catBar.appendChild(lbl);
-      [{ label: 'All', count: strongRows.length, cats: null }].concat(chips).forEach(function (ch, i) {
+      lbl.textContent = label;
+      bar.appendChild(lbl);
+      [{ label: 'All', count: t.rows.length, cats: null }].concat(t.chips).forEach(function (ch, i) {
         var b = document.createElement('button');
         b.type = 'button';
         b.className = 'dl cat-chip' + (i === 0 ? ' active' : '');
         b.setAttribute('data-chip', String(i - 1)); // -1 = All
+        b.setAttribute('aria-pressed', i === 0 ? 'true' : 'false');
         b.appendChild(document.createTextNode(ch.label));
         var cnt = document.createElement('span');
         cnt.className = 'cnt';
         cnt.textContent = String(ch.count);
         b.appendChild(cnt);
         if (ch.cats && ch.cats.length > 1) b.title = ch.cats.join(' · ');
-        catBar.appendChild(b);
+        bar.appendChild(b);
       });
-      card.insertBefore(catBar, wrap); // between the meta row and the table
+      bar.addEventListener('click', function (e) {
+        var btn = e.target && e.target.closest ? e.target.closest('.cat-chip') : null;
+        if (!btn || !bar.contains(btn)) return;
+        var idx = +btn.getAttribute('data-chip');
+        var ch = idx >= 0 ? t.chips[idx] : null;
+        // Radio behavior: one category at a time per bar; All (or re-clicking
+        // the active chip) resets this bar only.
+        if (!ch || t.categoryLabel === ch.label) {
+          t.category = null;
+          t.categoryLabel = '';
+        } else {
+          t.category = ch.cats;
+          t.categoryLabel = ch.label;
+        }
+        Array.prototype.forEach.call(bar.querySelectorAll('.cat-chip'), function (b) {
+          var i = +b.getAttribute('data-chip');
+          var on = t.category ? (i >= 0 && t.chips[i].label === t.categoryLabel) : i === -1;
+          b.classList.toggle('active', on);
+          b.setAttribute('aria-pressed', on ? 'true' : 'false');
+        });
+        renderBody();
+      });
+      return bar;
+    }
+    var catBar = makeChipBar(main, buildCategoryChips(strongRows, 8), 'Filter by category:');
+    if (catBar) card.insertBefore(catBar, wrap); // between the meta row and the table
+    if (weak) {
+      var weakBar = makeChipBar(weak, buildCategoryChips(weakRows, 8), 'Filter weak matches by category:');
+      if (weakBar) weakSec.insertBefore(weakBar, weakWrap); // between the description and the weak table
     }
 
-    // One filter/sort state for both tables. Sorting is by column name, so it
-    // also works on the weak table's extra Match Reason column.
-    var state = { filter: '', class3: false, sortKey: '', sortDir: 0, category: null, categoryLabel: '' };
+    // One text/Class III/sort state for both tables; the category is per table
+    // (t.category). Sorting is by column name, so it also works on the weak
+    // table's extra Match Reason column.
+    var state = { filter: '', class3: false, sortKey: '', sortDir: 0 };
     var numRe = /^-?\d+(\.\d+)?$/;
 
     function viewRows(t) {
       var out = t.rows.filter(function (r) {
-        if (state.category && state.category.indexOf(String(r['Product Category'] || '')) === -1) return false;
+        if (t.category && t.category.indexOf(String(r['Product Category'] || '')) === -1) return false;
         if (state.class3 && r['Device Class'] !== 'Class III') return false;
         if (state.filter) {
           var f = state.filter.toLowerCase();
@@ -3102,30 +3136,9 @@
       renderBody();
     });
 
-    if (catBar) catBar.addEventListener('click', function (e) {
-      var btn = e.target && e.target.closest ? e.target.closest('.cat-chip') : null;
-      if (!btn || !catBar.contains(btn)) return;
-      var idx = +btn.getAttribute('data-chip');
-      var ch = idx >= 0 ? chips[idx] : null;
-      // Radio behavior: one category at a time; All (or re-clicking the
-      // active chip) resets to everything.
-      if (!ch || state.categoryLabel === ch.label) {
-        state.category = null;
-        state.categoryLabel = '';
-      } else {
-        state.category = ch.cats;
-        state.categoryLabel = ch.label;
-      }
-      Array.prototype.forEach.call(catBar.querySelectorAll('.cat-chip'), function (b) {
-        var i = +b.getAttribute('data-chip');
-        b.classList.toggle('active', state.category ? (i >= 0 && chips[i].label === state.categoryLabel) : i === -1);
-      });
-      renderBody();
-    });
-
     // Publish the live view for the export suite: exports carry both tables —
-    // strong rows, then weak ones, open or collapsed — under the current
-    // chips/filters/sort.
+    // strong rows, then weak ones, open or collapsed — each under its own
+    // chip and the shared filters/sort, so the export is what is on screen.
     deviceView = {
       rows: function () {
         return tables.reduce(function (acc, t) { return acc.concat(viewRows(t)); }, []);
@@ -3135,7 +3148,8 @@
       total: (devicesResp && devicesResp.data && devicesResp.data.total) || null,
       desc: function () {
         var parts = [];
-        if (state.categoryLabel) parts.push('category: ' + state.categoryLabel);
+        if (main.categoryLabel) parts.push('category: ' + main.categoryLabel);
+        if (weak && weak.categoryLabel) parts.push('weak matches category: ' + weak.categoryLabel);
         if (state.filter) parts.push('filter: "' + state.filter + '"');
         if (state.class3) parts.push('Class III only');
         return parts.join(' · ');
