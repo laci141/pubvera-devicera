@@ -327,6 +327,146 @@ test('CSV export carries every row, strong and weak, with a Match Reason column'
   }
 });
 
+// ---- Rows that look alike carry the fields that tell them apart ----
+//
+// Zoll registers one "M SERIES BIPHASIC" per hardware configuration: same
+// company and brand, a different DI, model number and description, and the
+// same product codes in a different order. Synthetic, so the check does not
+// depend on what the recorded fixture happens to contain.
+
+const PC = {
+  DPS: 'Electrocardiograph',
+  DRO: 'Pacemaker, Cardiac, External Transcutaneous (Non-Invasive)',
+  LDD: 'Dc-Defibrillator, Low-Energy, (Including Paddles)',
+  MKJ: 'Automated External Defibrillators (Non-Wearable)',
+};
+const codeSet = (primary: string) => Object.keys(PC).sort().map((code) =>
+  ({ code, name: (PC as any)[code], primary: code === primary }));
+const zollRow = (udi: string, model: string, desc: string, published: string, primary: string, strength: string, reason: string) => ({
+  udi, device_name: 'M SERIES BIPHASIC', company: 'Zoll Medical Corporation', device_class: 'Class II',
+  product_category: (PC as any)[primary], registration_status: 'Published', listing_status: 'Not in Commercial Distribution',
+  sterilization: 'Non-sterile', latex: 'Not labeled latex-free', last_update: '2026-02-13', matched_on: 'Product category',
+  match_strength: strength, match_reason: reason,
+  model_number: model, device_description: desc, product_codes: codeSet(primary), publish_date: published,
+});
+const ZOLL = [
+  zollRow('00847946003098', '40010021100163010', 'Defibrillator ,MAIN, EMTD-1,AED,3/5LEAD,BIPHASIC,DC,PC,EL,RC,SM,CM,ENG', '2014-09-19', 'MKJ', 'strong', 'FDA category'),
+  zollRow('00847946013035', '60010011100010011', '', '', 'LDD', 'strong', 'FDA category'),
+  zollRow('00847946004316', '40021221100123010', 'Defibrillator ,MAIN,MAN-1,12 LEAD,SPO2,BIPHASIC,EL,PACE,RCD,SMR,CDMK,D', '2014-09-19', 'DRO', 'weak', 'Secondary FDA code MKJ: ' + PC.MKJ),
+];
+const NEW_EXPORT_COLS = ['Model Number', 'Device Description', 'Product Codes', 'First Published'];
+const codesText = (r: any) => r.product_codes.map((p: any) => p.code + ': ' + p.name).join('; ');
+
+async function serveZoll(page: Page) {
+  await page.route((url) => url.pathname === '/api/devices', (route) => route.fulfill({ json: {
+    records: ZOLL, count: ZOLL.length, total: ZOLL.length, total_brand: 0, total_category: ZOLL.length,
+    fetched_category: ZOLL.length, folded_similar: 0,
+  } }));
+  await search(page);
+}
+
+const headerTexts = async (table: any) =>
+  (await table.locator('thead th').allTextContents()).map((h: string) => h.replace(/[⇅↑↓]$/, ''));
+
+test('look-alike rows show model number, description, product codes and first-published date', async ({ page, pageErrors }) => {
+  await serveZoll(page);
+  const main = page.locator('.dev-card > .dev-table-wrap .dev-table');
+  const weakSec = page.locator(WEAK_SECTION);
+  await weakSec.locator('summary').click();
+  const weakTable = weakSec.locator('.dev-table');
+
+  for (const table of [main, weakTable]) {
+    const h = await headerTexts(table);
+    for (const c of NEW_EXPORT_COLS) expect(h, 'headers: ' + h.join(' | ')).toContain(c);
+    // The two dates sit side by side under names that cannot be confused.
+    expect(h[h.indexOf('Last Update') + 1]).toBe('First Published');
+  }
+
+  // Three rows, three model numbers: two in the main table, one weak.
+  const models: string[] = [];
+  for (const table of [main, weakTable]) {
+    const idx = (await headerTexts(table)).indexOf('Model Number');
+    models.push(...await table.locator('tbody tr td:nth-child(' + (idx + 1) + ')').allTextContents());
+  }
+  expect(models.sort()).toEqual(ZOLL.map((r) => r.model_number).sort());
+
+  const mh = await headerTexts(main);
+  const cell = (row: number, col: string) => main.locator('tbody tr').nth(row).locator('td').nth(mh.indexOf(col));
+  const rowOf = async (udi: string) => (await main.locator('tbody td.udi-cell').allTextContents())
+    .findIndex((s) => s.replace(/\s*↗$/, '') === udi);
+  const full = await rowOf(ZOLL[0].udi);
+  const empty = await rowOf(ZOLL[1].udi);
+
+  // Description: the full text lives in the title; the cell clamps it.
+  await expect(cell(full, 'Device Description').locator('[title]')).toHaveAttribute('title', ZOLL[0].device_description);
+  // Empty values read "—", never blank or "undefined".
+  await expect(cell(empty, 'Device Description')).toHaveText('—');
+  await expect(cell(empty, 'First Published')).toHaveText('—');
+  await expect(cell(full, 'First Published')).toHaveText('2014-09-19');
+
+  // Product codes: chips, the shown-category code first and marked, then the rest sorted.
+  const chips = cell(full, 'Product Codes').locator('.pc-chip');
+  await expect(chips).toHaveText(['MKJ', 'DPS', 'DRO', 'LDD']);
+  await expect(chips.first()).toHaveClass(/\bprimary\b/);
+  await expect(cell(full, 'Product Codes').locator('.pc-chip.primary')).toHaveCount(1);
+  await expect(chips.nth(1)).toHaveAttribute('title', 'DPS: ' + PC.DPS);
+
+  expect(pageErrors).toEqual([]);
+});
+
+test('every export carries the four new columns right after Match Reason, filters applied', async ({ page }) => {
+  await serveZoll(page);
+  const byUDI = new Map(ZOLL.map((r) => [r.udi, r]));
+  const want = (r: any) => [r.model_number, r.device_description, codesText(r), r.publish_date];
+  const card = page.locator('.dev-card');
+  const grab = async (label: string) => {
+    const download = page.waitForEvent('download');
+    await card.locator('button', { hasText: label }).click();
+    return (await download).path();
+  };
+
+  // CSV
+  const lines = parseCSV(fs.readFileSync((await grab('CSV'))!, 'utf8').replace(/^﻿/, ''));
+  const header = lines[2];
+  const reason = header.indexOf('Match Reason');
+  expect(header.slice(reason + 1, reason + 5)).toEqual(NEW_EXPORT_COLS);
+  const body = lines.slice(3).filter((r) => r.length > 1);
+  expect(body).toHaveLength(ZOLL.length);
+  for (const r of body) expect(r.slice(reason + 1, reason + 5)).toEqual(want(byUDI.get(r[header.indexOf('UDI')])));
+
+  // JSON
+  const json = JSON.parse(fs.readFileSync((await grab('JSON'))!, 'utf8'));
+  const keys = Object.keys(json.rows[0]);
+  expect(keys.slice(keys.indexOf('Match Reason') + 1, keys.indexOf('Match Reason') + 5)).toEqual(NEW_EXPORT_COLS);
+  for (const r of json.rows) expect(NEW_EXPORT_COLS.map((c) => r[c])).toEqual(want(byUDI.get(r['UDI'])));
+
+  // Excel
+  const XLSX = require('xlsx-js-style');
+  const ws = XLSX.readFile((await grab('Excel'))!).Sheets['Devicera'];
+  const aoa: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+  const xh = aoa[1];
+  const xr = xh.indexOf('Match Reason');
+  expect(xh.slice(xr + 1, xr + 5)).toEqual(NEW_EXPORT_COLS);
+  for (const r of aoa.slice(2)) expect(r.slice(xr + 1, xr + 5).map(String)).toEqual(want(byUDI.get(String(r[xh.indexOf('UDI')]))));
+
+  // BibTeX: model number as the version, the rest in the note.
+  const bib = fs.readFileSync((await grab('BibTeX'))!, 'utf8');
+  const entries = bib.split(/\n(?=@misc\{)/).filter((e) => e.startsWith('@misc{'));
+  expect(entries).toHaveLength(ZOLL.length);
+  for (const r of ZOLL) {
+    const e = entries.find((x) => x.startsWith('@misc{UDI-' + r.udi + ','))!;
+    expect(e, r.udi).toContain('version      = {' + r.model_number + '}');
+    expect(e, r.udi).toContain('product codes: ' + codesText(r));
+    if (r.publish_date) expect(e, r.udi).toContain('first published: ' + r.publish_date);
+    if (r.device_description) expect(e, r.udi).toContain('description: ' + r.device_description);
+  }
+
+  // The text filter still narrows every export — here, to one model number.
+  await card.locator('.qfilter').fill(ZOLL[0].model_number);
+  const filtered = parseCSV(fs.readFileSync((await grab('CSV'))!, 'utf8').replace(/^﻿/, '')).slice(3).filter((r) => r.length > 1);
+  expect(filtered.map((r) => r[header.indexOf('UDI')])).toEqual([ZOLL[0].udi]);
+});
+
 // ---- One failed /api call degrades only its own section ----
 //
 // Each of the five /api calls passes Caddy forward_auth on its own, so one can

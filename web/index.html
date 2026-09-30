@@ -728,6 +728,10 @@
   .class-badge.cu { color: var(--ink-3); }
   .dev-table td.udi-cell a { color: var(--accent); text-decoration: none; }
   .dev-table td.udi-cell a:hover { text-decoration: underline; }
+  .dev-table .desc-clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; min-width: 14em; max-width: 26em; }
+  .pc-chips { display: flex; flex-wrap: wrap; gap: 3px; min-width: 7em; }
+  .pc-chip { display: inline-block; font-family: var(--mono); font-size: 0.66rem; border-radius: 999px; padding: 1px 6px; border: 1px solid var(--glass-border); background: var(--glass); white-space: nowrap; }
+  .pc-chip.primary { border-color: var(--accent); color: var(--accent); font-weight: 700; }
   .weak-matches { margin-top: 1rem; border-top: 1px solid var(--glass-border); padding-top: 0.7rem; }
   .weak-matches summary { cursor: pointer; font-size: 0.8rem; font-weight: 600; color: var(--ink-2); }
   .weak-matches summary:hover { color: var(--accent); }
@@ -2588,14 +2592,21 @@
       var cls = bibEsc(r['Device Class'] || '');
       var cat = bibEsc(r['Product Category'] || '');
       var reason = bibEsc(r['Match Reason'] || '');
+      var model = bibEsc(r['Model Number'] || '');
+      var details = [
+        ['description', r['Device Description']],
+        ['product codes', r['Product Codes']],
+        ['first published', r['First Published']]
+      ].filter(function (d) { return d[1]; }).map(function (d) { return '; ' + d[0] + ': ' + bibEsc(d[1]); }).join('');
       var lines = ['@misc{' + bibKeyForDevice(r, i) + ','];
       lines.push('  title        = {' + title + '},');
       if (company) lines.push('  author       = {{' + company + '}},');
+      if (model) lines.push('  version      = {' + model + '},');
       lines.push('  howpublished = {FDA Device Registration and Listing Database (GUDID)' + (udi ? ', UDI: ' + udi : '') + '},');
       var ry = bibYear(r);
       if (ry) lines.push('  year         = {' + ry + '},');
       if (udi) lines.push('  url          = {https://accessgudid.nlm.nih.gov/devices/' + encodeURIComponent(udi) + '},');
-      lines.push('  note         = {' + (cls ? 'Device ' + cls : 'Device class unknown') + (cat ? ' — ' + cat : '') + (reason ? '; match: ' + reason : '') + '; exported from Devicera; data via openFDA}');
+      lines.push('  note         = {' + (cls ? 'Device ' + cls : 'Device class unknown') + (cat ? ' — ' + cat : '') + (reason ? '; match: ' + reason : '') + details + '; exported from Devicera; data via openFDA}');
       lines.push('}');
       out.push(lines.join('\n'));
     });
@@ -2679,14 +2690,18 @@
   var DEVICE_COLS = [
     ['udi', 'UDI'],
     ['device_name', 'Device Name'],
+    ['model_number', 'Model Number'],
     ['company', 'Company'],
     ['device_class', 'Device Class'],
     ['product_category', 'Product Category'],
+    ['product_codes', 'Product Codes'],
+    ['device_description', 'Device Description'],
     ['registration_status', 'Registration Status'],
     ['listing_status', 'Listing Status'],
     ['sterilization', 'Sterilization'],
     ['latex', 'Latex Content'],
     ['last_update', 'Last Update'],
+    ['publish_date', 'First Published'],
     ['matched_on', 'Matched On'],
     // How many near-identical registrations (same company, same product
     // category, same device name) this row stands for. Blank means it stands
@@ -2697,11 +2712,60 @@
   // Exports and the Weak matches table add Match Reason right after Matched
   // On: which field carried the query — for a weak match, the secondary FDA
   // product code the row itself never shows.
+  // The fields that tell apart registrations sharing a company and a name
+  // (one DI per model): on screen they sit next to their neighbours, in the
+  // exports they follow Match Reason so the older columns keep their places.
+  var DEVICE_DETAIL_KEYS = ['model_number', 'device_description', 'product_codes', 'publish_date'];
   var DEVICE_EXPORT_COLS = [];
+  var DEVICE_WEAK_COLS = [];
   DEVICE_COLS.forEach(function (c) {
+    DEVICE_WEAK_COLS.push(c);
+    if (c[0] === 'matched_on') DEVICE_WEAK_COLS.push(['match_reason', 'Match Reason']);
+    if (DEVICE_DETAIL_KEYS.indexOf(c[0]) !== -1) return;
     DEVICE_EXPORT_COLS.push(c);
-    if (c[0] === 'matched_on') DEVICE_EXPORT_COLS.push(['match_reason', 'Match Reason']);
+    if (c[0] === 'matched_on') {
+      DEVICE_EXPORT_COLS.push(['match_reason', 'Match Reason']);
+      DEVICE_DETAIL_KEYS.forEach(function (k) {
+        DEVICE_COLS.forEach(function (d) { if (d[0] === k) DEVICE_EXPORT_COLS.push(d); });
+      });
+    }
   });
+
+  // On-screen headers of those fields; an empty one reads "—", never blank.
+  var DEVICE_DETAIL_HEADERS = DEVICE_COLS.filter(function (c) {
+    return DEVICE_DETAIL_KEYS.indexOf(c[0]) !== -1;
+  }).map(function (c) { return c[1]; });
+
+  // productCodeChips renders the code set as small chips: the code shown as
+  // the row's Product Category first and marked, then the rest in code order.
+  function productCodeChips(codes) {
+    var wrap = document.createElement('div');
+    wrap.className = 'pc-chips';
+    var list = (codes || []).filter(function (p) { return p.primary; })
+      .concat((codes || []).filter(function (p) { return !p.primary; }));
+    list.forEach(function (p) {
+      var chip = document.createElement('span');
+      chip.className = 'pc-chip' + (p.primary ? ' primary' : '');
+      chip.textContent = p.code;
+      chip.title = (p.name ? p.code + ': ' + p.name : p.code) + (p.primary ? ' — shown as Product Category' : '');
+      wrap.appendChild(chip);
+    });
+    return wrap;
+  }
+
+  // Header tooltips: the two GUDID dates must not be read as one another.
+  var DEVICE_COL_TITLES = {
+    'Last Update': 'Date of the latest version of this GUDID record',
+    'First Published': 'Date GUDID first published this record'
+  };
+
+  // productCodesText is the export form of the sorted product-code set:
+  // "CODE: FDA name; CODE: FDA name" (the name only where known).
+  function productCodesText(codes) {
+    return (Array.isArray(codes) ? codes : []).map(function (p) {
+      return p.name ? p.code + ': ' + p.name : p.code;
+    }).join('; ');
+  }
 
   function isoDate(v) {
     var m = /^(\d{4}-\d{2}-\d{2})/.exec(String(v || ''));
@@ -2765,8 +2829,13 @@
       var o = {};
       DEVICE_EXPORT_COLS.forEach(function (c) {
         var v = r[c[0]];
-        o[c[1]] = c[0] === 'last_update' ? isoDate(v) : (v == null ? '' : v);
+        if (c[0] === 'last_update' || c[0] === 'publish_date') o[c[1]] = isoDate(v);
+        else if (c[0] === 'product_codes') o[c[1]] = productCodesText(v);
+        else o[c[1]] = v == null ? '' : v;
       });
+      // The structured code set for the on-screen chips. Not enumerable, so
+      // it never becomes an export column.
+      Object.defineProperty(o, '_codes', { value: Array.isArray(r.product_codes) ? r.product_codes : [] });
       // Extra export-only column (not in DEVICE_COLS, so not an on-screen
       // column): the AccessGUDID verify link for CSV/Excel/JSON.
       o['URL'] = o['UDI'] ? gudidURL(o['UDI']) : '';
@@ -2782,7 +2851,7 @@
     var rows = strongRows.concat(weakRows);
     lastData.udi = rows;
     var headers = DEVICE_COLS.map(function (c) { return c[1]; });
-    var weakHeaders = DEVICE_EXPORT_COLS.map(function (c) { return c[1]; });
+    var weakHeaders = DEVICE_WEAK_COLS.map(function (c) { return c[1]; });
 
     var heading = document.createElement('h2');
     heading.className = 'section';
@@ -2819,6 +2888,7 @@
       hdrs.forEach(function (h) {
         var th = document.createElement('th');
         th.setAttribute('data-col', h);
+        if (DEVICE_COL_TITLES[h]) th.title = DEVICE_COL_TITLES[h];
         th.textContent = h;
         var arrow = document.createElement('span');
         arrow.className = 'arrow';
@@ -2948,6 +3018,16 @@
             b.className = 'class-badge ' + classBadgeCls(r[h]);
             b.textContent = r[h];
             td.appendChild(b);
+          } else if (DEVICE_DETAIL_HEADERS.indexOf(h) !== -1 && (r[h] == null || r[h] === '')) {
+            td.textContent = '—';
+          } else if (h === 'Product Codes') {
+            td.appendChild(productCodeChips(r._codes));
+          } else if (h === 'Device Description') {
+            var d = document.createElement('div');
+            d.className = 'desc-clamp';
+            d.title = r[h];
+            d.textContent = r[h];
+            td.appendChild(d);
           } else {
             td.textContent = r[h];
           }
