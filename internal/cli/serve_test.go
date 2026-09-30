@@ -287,9 +287,39 @@ func TestCategoryChipsSumInvariant(t *testing.T) {
 	if start < 0 || end < start {
 		t.Fatal("chips-logic markers missing from web/index.html")
 	}
+	// Each table has its own chip bar, built from that table's rows only.
+	for _, call := range []string{"buildCategoryChips(strongRows, 8)", "buildCategoryChips(weakRows, 8)"} {
+		if !strings.Contains(s, call) {
+			t.Errorf("web/index.html does not build a chip bar with %s", call)
+		}
+	}
+	// The recorded pacemaker weak rows: 20 categories, none shared with the
+	// strong rows, so the cap and the Other chip both come into play.
+	fx, err := os.ReadFile(filepath.Join("..", "..", "e2e", "fixtures", "pacemaker", "devices.json"))
+	if err != nil {
+		t.Fatalf("read pacemaker fixture: %v", err)
+	}
+	var devs struct {
+		Records []map[string]any `json:"records"`
+	}
+	if err := json.Unmarshal(fx, &devs); err != nil {
+		t.Fatalf("parse pacemaker fixture: %v", err)
+	}
+	var weakRows []map[string]string
+	for _, r := range devs.Records {
+		if r["match_strength"] == "weak" {
+			c, _ := r["product_category"].(string)
+			weakRows = append(weakRows, map[string]string{"Product Category": c})
+		}
+	}
+	if len(weakRows) == 0 {
+		t.Fatal("pacemaker fixture has no weak rows; the weak-bar case would prove nothing")
+	}
+	weakJSON, _ := json.Marshal(weakRows)
 	script := s[start:end] + `
 const mk = (cat, n) => Array.from({ length: n }, () => ({ 'Product Category': cat }));
 const cases = [
+  ` + string(weakJSON) + `,
   [].concat(mk('A', 40), mk('B', 30), mk('', 14), mk('C', 9), mk('D', 7)),
   // 12 distinct categories: exceeds the cap of 8, and the 1-row empty
   // category must still surface instead of folding into Other.

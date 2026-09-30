@@ -514,6 +514,105 @@ test('weak label: Class III toggle counts the visible weak rows', async ({ page,
   expect(pageErrors).toEqual([]);
 });
 
+// ---- Two chip bars: main chips filter the main table, weak chips the weak one ----
+//
+// Weak rows never share a category with the strong rows in the recorded data,
+// so one shared chip filter dropped every weak row. Each table now has its own
+// bar, and each chip count is the rows that chip shows on its own.
+
+const MAIN_CHIPS = '.dev-card > .cat-bar .cat-chip';
+const WEAK_CHIPS = WEAK_SECTION + ' .cat-bar .cat-chip';
+const udisOf = async (rows: any) => (await rows.locator('td.udi-cell').allTextContents()).map((s: string) => s.replace(/\s*↗$/, ''));
+
+// ZOLL with its weak row plus a second weak row in another category, so the
+// weak bar has two chips.
+const ZOLL_WEAK_SPLIT = [...ZOLL,
+  zollRow('00847946007775', '40040021100177010', 'Defibrillator ,MAIN,MAN-3,12 LEAD,ECG', '2016-05-11', 'DPS', 'weak', 'Secondary FDA code MKJ: ' + PC.MKJ)];
+
+test('chip bars: a main chip leaves the weak table and its label untouched', async ({ page, pageErrors }) => {
+  await serveZoll(page, ZOLL_TWO_WEAK);
+  const section = page.locator(WEAK_SECTION);
+  await section.locator('summary').click();
+  const chip = page.locator(MAIN_CHIPS, { hasText: PC.MKJ });
+  await chip.click();
+  await expect(page.locator(MAIN_ROWS)).toHaveCount(1);
+  await expect(section.locator('summary')).toHaveText(weakLabel(String(WEAK_TOTAL)));
+  await expect(section.locator('tbody tr')).toHaveCount(WEAK_TOTAL);
+  await expect(chip).toHaveClass(/\bactive\b/);
+  await expect(chip).toHaveAttribute('aria-pressed', 'true');
+  expect(pageErrors).toEqual([]);
+});
+
+test('chip bars: a weak chip filters only the weak table and the label reads "1 / 2"', async ({ page, pageErrors }) => {
+  await serveZoll(page, ZOLL_WEAK_SPLIT);
+  const section = page.locator(WEAK_SECTION);
+  await section.locator('summary').click();
+  const mainBefore = await page.locator(MAIN_ROWS).count();
+  await expect(page.locator(WEAK_CHIPS).first()).toHaveText('All2');
+  const chip = page.locator(WEAK_CHIPS, { hasText: PC.DPS });
+  await chip.click();
+  await expect(chip).toHaveAttribute('aria-pressed', 'true');
+  await expect(section.locator('summary')).toHaveText(weakLabel('1 / 2'));
+  expect(await udisOf(section.locator('tbody tr'))).toEqual([ZOLL_WEAK_SPLIT[3].udi]);
+  await expect(page.locator(MAIN_ROWS)).toHaveCount(mainBefore);
+  // Clicking the active chip resets this bar only.
+  await chip.click();
+  await expect(chip).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.locator(WEAK_CHIPS).first()).toHaveAttribute('aria-pressed', 'true');
+  await expect(section.locator('summary')).toHaveText(weakLabel('2'));
+  expect(pageErrors).toEqual([]);
+});
+
+test('chip bars: pacemaker chip counts match the rows each chip shows, in both bars', async ({ page, pageErrors }) => {
+  const devices = fixture('devices');
+  const strong = strongRecords(devices);
+  const weak = weakRecords(devices);
+  await search(page);
+  const section = page.locator(WEAK_SECTION);
+  await section.locator('summary').click();
+
+  await expect(page.locator(MAIN_CHIPS).first()).toHaveText('All' + strong.length);
+  await expect(page.locator(WEAK_CHIPS).first()).toHaveText('All' + weak.length);
+  const counts = (await page.locator(WEAK_CHIPS + ' .cnt').allTextContents()).map(Number);
+  expect(counts.slice(1).reduce((a, b) => a + b, 0)).toBe(weak.length);
+
+  // Every chip, alone, shows exactly its count; the other table does not move.
+  for (const [chips, rows, other, otherTotal] of [
+    [MAIN_CHIPS, MAIN_ROWS, WEAK_SECTION + ' tbody tr', weak.length],
+    [WEAK_CHIPS, WEAK_SECTION + ' tbody tr', MAIN_ROWS, strong.length],
+  ] as const) {
+    const n = await page.locator(chips).count();
+    for (let i = 1; i < n; i++) {
+      const chip = page.locator(chips).nth(i);
+      const want = Number(await chip.locator('.cnt').textContent());
+      await chip.click();
+      await expect(page.locator(rows), 'chip ' + (await chip.textContent())).toHaveCount(want);
+      await expect(page.locator(other)).toHaveCount(otherTotal);
+      await chip.click(); // back to All
+    }
+  }
+  expect(pageErrors).toEqual([]);
+});
+
+test('chip bars: CSV export after a main chip and a weak chip carries exactly the visible rows', async ({ page, pageErrors }) => {
+  await serveZoll(page, ZOLL_WEAK_SPLIT);
+  const card = page.locator('.dev-card');
+  const section = page.locator(WEAK_SECTION);
+  await section.locator('summary').click();
+  await page.locator(MAIN_CHIPS, { hasText: PC.MKJ }).click();
+  await page.locator(WEAK_CHIPS, { hasText: PC.DPS }).click();
+  const visible = [...await udisOf(page.locator(MAIN_ROWS)), ...await udisOf(section.locator('tbody tr'))];
+  expect(visible.sort()).toEqual([ZOLL[0].udi, ZOLL_WEAK_SPLIT[3].udi].sort());
+
+  const download = page.waitForEvent('download');
+  await card.locator('button', { hasText: 'CSV' }).click();
+  const lines = parseCSV(fs.readFileSync((await (await download).path())!, 'utf8').replace(/^﻿/, ''));
+  const header = lines[2];
+  const udis = lines.slice(3).filter((r) => r.length > 1).map((r) => r[header.indexOf('UDI')]);
+  expect(udis.sort()).toEqual(visible.sort());
+  expect(pageErrors).toEqual([]);
+});
+
 // ---- One failed /api call degrades only its own section ----
 //
 // Each of the five /api calls passes Caddy forward_auth on its own, so one can
