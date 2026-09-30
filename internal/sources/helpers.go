@@ -28,11 +28,14 @@ func paramsForSearch(q Query) url.Values {
 }
 
 // parseCounts decodes an openFDA count=... response ({results:[{term,count}]})
-// into a term->count map. Shared by every count capability.
+// into a term->count map. Shared by every count capability. A count on a date
+// field (e.g. count=date_received) answers {time,count} daily buckets instead;
+// those are keyed by their YYYYMMDD time.
 func parseCounts(body []byte) (map[string]int, error) {
 	var env struct {
 		Results []struct {
 			Term  string `json:"term"`
+			Time  string `json:"time"`
 			Count int    `json:"count"`
 		} `json:"results"`
 	}
@@ -41,7 +44,11 @@ func parseCounts(body []byte) (map[string]int, error) {
 	}
 	out := make(map[string]int, len(env.Results))
 	for _, r := range env.Results {
-		out[r.Term] = r.Count
+		key := r.Term
+		if key == "" {
+			key = r.Time
+		}
+		out[key] = r.Count
 	}
 	return out, nil
 }
