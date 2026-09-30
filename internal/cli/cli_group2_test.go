@@ -104,24 +104,26 @@ func TestSafetyComposite(t *testing.T) {
 	}
 }
 
+// TestTimelineSortedNewestFirst: in plain and CSV output a newer MAUDE month
+// (2024-06) sorts before an older recall (2020). MAUDE is monthly counts now,
+// not individual reports; the full merge order is TestTimelineMergedOrderAndLagNote.
 func TestTimelineSortedNewestFirst(t *testing.T) {
-	withSources(t, map[string]sources.Source{
-		"openfda_device_enforcement": fakeSource{name: "openfda_device_enforcement", id: "recall_number",
-			recs: []sources.RawRecord{{ID: "Z-OLD", Raw: map[string]any{"recall_initiation_date": "20200101", "classification": "Class II"}}}},
-		"openfda_device_event": fakeEventSource{fakeSource: fakeSource{name: "openfda_device_event", id: "mdr_report_key",
-			recs: []sources.RawRecord{eventRec("M-NEW", "Injury", "20240615")}}},
-	})
-	out, _, code := run(cmdTimeline, "pacemaker")
+	withTimelineSources(t, []sources.RawRecord{recallRec("Z-OLD", "20200101")}, nil, map[string]int{"20240615": 3}, nil)
+	out, _, code := run(cmdTimeline, "--months", "1", "pacemaker")
 	if code != 0 {
 		t.Fatalf("exit=%d want 0", code)
 	}
-	iNew := strings.Index(out, "M-NEW")
+	iNew := strings.Index(out, "2024-06")
 	iOld := strings.Index(out, "Z-OLD")
 	if iNew < 0 || iOld < 0 {
 		t.Fatalf("both events must appear; got:\n%s", out)
 	}
 	if iNew > iOld {
-		t.Errorf("newer event (2024) must sort before older (2020); got order new@%d old@%d", iNew, iOld)
+		t.Errorf("newer month (2024) must sort before older recall (2020); got order new@%d old@%d", iNew, iOld)
+	}
+	csvOut, _, code := run(cmdTimeline, "--csv", "--months", "1", "pacemaker")
+	if code != 0 || !strings.HasPrefix(csvOut, "count,date,description,event_type,kind,month,note,source,source_id\n") {
+		t.Errorf("csv exit=%d header:\n%s", code, csvOut)
 	}
 }
 
