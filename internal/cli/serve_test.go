@@ -899,6 +899,80 @@ func TestDeviceRowScorePluralCategory(t *testing.T) {
 	}
 }
 
+// Zoll registers one "M SERIES BIPHASIC" per hardware configuration: same
+// company and brand, a different DI, model number and description, and the
+// same product codes listed in a different order. Each row must carry the
+// fields that tell them apart, with the product-code set sorted so the three
+// rows show it identically; the rows themselves stay three.
+func TestDevicesRowsCarryDistinguishingFields(t *testing.T) {
+	zoll := func(di, model, desc, published string, codes ...string) map[string]any {
+		raw := udiRaw(di, "M SERIES BIPHASIC", codes...)
+		raw["company_name"] = "Zoll Medical Corporation"
+		raw["version_or_model_number"] = model
+		raw["device_description"] = desc
+		raw["publish_date"] = published
+		return raw
+	}
+	const (
+		aed = "Automated External Defibrillators (Non-Wearable)"
+		ecg = "Electrocardiograph"
+		pac = "Pacemaker, Cardiac, External Transcutaneous (Non-Invasive)"
+		ldd = "Dc-Defibrillator, Low-Energy, (Including Paddles)"
+	)
+	body, _ := devicesResponse(t, "defibrillator", nil, []map[string]any{
+		zoll("00847946003098", "40010021100163010", "Defibrillator ,MAIN, EMTD-1,AED", "2014-09-19",
+			"MKJ", aed, "DRO", pac, "DPS", ecg, "LDD", ldd),
+		zoll("00847946013035", "60010011100010011", "Defibrillator ,MAIN,HOSPITAL PRIMARY", "2014-09-18",
+			"DPS", ecg, "DRO", pac, "MKJ", aed, "LDD", ldd),
+		zoll("00847946004316", "40021221100123010", "Defibrillator ,MAIN,MAN-1,12 LEAD", "2014-09-20",
+			"DRO", pac, "MKJ", aed, "DPS", ecg, "LDD", ldd),
+	})
+	recs := asMaps(body["records"])
+	if len(recs) != 3 {
+		t.Fatalf("records=%d, want 3 (distinct DIs are never folded)", len(recs))
+	}
+	want := map[string][3]string{ // udi -> model, description, publish date
+		"00847946003098": {"40010021100163010", "Defibrillator ,MAIN, EMTD-1,AED", "2014-09-19"},
+		"00847946013035": {"60010011100010011", "Defibrillator ,MAIN,HOSPITAL PRIMARY", "2014-09-18"},
+		"00847946004316": {"40021221100123010", "Defibrillator ,MAIN,MAN-1,12 LEAD", "2014-09-20"},
+	}
+	primary := map[string]string{"00847946003098": "MKJ", "00847946013035": "DPS", "00847946004316": "DRO"}
+	wantCodes := "DPS: " + ecg + " | DRO: " + pac + " | LDD: " + ldd + " | MKJ: " + aed
+	for _, r := range recs {
+		udi := str(r["udi"])
+		w, ok := want[udi]
+		if !ok {
+			t.Fatalf("unexpected row %q", udi)
+		}
+		if got := str(r["model_number"]); got != w[0] {
+			t.Errorf("%s model_number=%q, want %q", udi, got, w[0])
+		}
+		if got := str(r["device_description"]); got != w[1] {
+			t.Errorf("%s device_description=%q, want %q", udi, got, w[1])
+		}
+		if got := str(r["publish_date"]); got != w[2] {
+			t.Errorf("%s publish_date=%q, want %q", udi, got, w[2])
+		}
+		var parts []string
+		marked := ""
+		for _, pc := range asMaps(r["product_codes"]) {
+			parts = append(parts, str(pc["code"])+": "+str(pc["name"]))
+			if b, _ := pc["primary"].(bool); b {
+				marked += str(pc["code"])
+			}
+		}
+		if got := strings.Join(parts, " | "); got != wantCodes {
+			t.Errorf("%s product_codes=%q, want sorted %q", udi, got, wantCodes)
+		}
+		if marked != primary[udi] {
+			t.Errorf("%s primary code=%q, want %q (the code shown as the category)", udi, marked, primary[udi])
+		}
+		if got := str(r["company"]); got != "Zoll Medical Corporation" {
+			t.Errorf("%s company=%q — existing field must be unchanged", udi, got)
+		}
+	}
+}
+
 // A strong row whose name carries the query but whose shown category and
 // product codes do not says so in match_reason. A later product code that
 // carries the query keeps the plain "Brand name" reason.

@@ -610,7 +610,33 @@ func deviceRow(raw map[string]any) map[string]any {
 		"sterilization":       sterile,
 		"latex":               latex,
 		"last_update":         last,
+		// The fields that tell apart registrations sharing a company and a
+		// name (Zoll's M SERIES: one DI per hardware configuration).
+		"model_number":       str(raw["version_or_model_number"]),
+		"device_description": str(raw["device_description"]),
+		"product_codes":      productCodeSet(raw),
+		"publish_date":       str(raw["publish_date"]),
 	}
+}
+
+// productCodeSet lists every product code on the record once, sorted by code,
+// each with its FDA name where known; primary marks product_codes[0], the code
+// whose name the row shows as its category. GUDID lists the same codes in a
+// different order on sibling registrations, so the sorted set reads the same
+// on every one of them.
+func productCodeSet(raw map[string]any) []map[string]any {
+	out := []map[string]any{}
+	seen := map[string]bool{}
+	for i, pc := range asMaps(raw["product_codes"]) {
+		code := str(pc["code"])
+		if code == "" || seen[code] {
+			continue
+		}
+		seen[code] = true
+		out = append(out, map[string]any{"code": code, "name": productCodeName(pc), "primary": i == 0})
+	}
+	sort.SliceStable(out, func(a, b int) bool { return str(out[a]["code"]) < str(out[b]["code"]) })
+	return out
 }
 
 // udiClient reaches openFDA directly for the one UDI search the sources
