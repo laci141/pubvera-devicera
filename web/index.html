@@ -2912,13 +2912,13 @@
 
     // Weak matches: collapsed below the main table (native <details>), the
     // same columns plus Match Reason so each row says which code matched.
-    var weak = null;
+    // Its summary label is written by renderBody so it follows the filters.
+    var weak = null, weakSummary = null;
     if (weakRows.length) {
       var weakSec = document.createElement('details');
       weakSec.className = 'weak-matches';
-      var summary = document.createElement('summary');
-      summary.textContent = 'Weak matches (' + weakRows.length + ') — matched only through a secondary FDA product code';
-      weakSec.appendChild(summary);
+      weakSummary = document.createElement('summary');
+      weakSec.appendChild(weakSummary);
       var weakDesc = elDiv('group-desc');
       weakDesc.textContent = 'The search term is not in these records’ name or shown FDA category. FDA lists it under another of their product codes, named in Match Reason — often a multi-function device (a defibrillator with a built-in external pacer) or a kit that contains such a part. They are included in every export.';
       weakSec.appendChild(weakDesc);
@@ -3041,7 +3041,14 @@
 
     function renderBody() {
       var shown = fillTable(main);
-      if (weak) fillTable(weak);
+      if (weak) {
+        // "shown / total" only while the filters hide some weak rows, like
+        // the main table's "x / y rows"; the section stays even at 0.
+        var weakShown = fillTable(weak);
+        weakSummary.textContent = 'Weak matches (' +
+          (weakShown < weakRows.length ? weakShown + ' / ' + weakRows.length : weakRows.length) +
+          ') — matched only through a secondary FDA product code';
+      }
       var qc = card.querySelector('.qcount');
       if (qc) qc.textContent = ' · ' + shown + ' / ' + strongRows.length + ' rows';
     }
