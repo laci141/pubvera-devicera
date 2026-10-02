@@ -8,14 +8,15 @@ import (
 )
 
 // OpenFDADeviceEnforcement is the LIVE openFDA device recall/enforcement
-// adapter. Endpoint: https://api.fda.gov/device/enforcement.json. Keyless.
+// adapter. Endpoint: https://api.fda.gov/device/enforcement.json. Keyless
+// unless OPENFDA_API_KEY is set.
 type OpenFDADeviceEnforcement struct {
 	client *cliutil.Client
 }
 
 // NewOpenFDADeviceEnforcement constructs the adapter against the openFDA base.
 func NewOpenFDADeviceEnforcement() *OpenFDADeviceEnforcement {
-	return &OpenFDADeviceEnforcement{client: cliutil.NewClient("https://api.fda.gov")}
+	return &OpenFDADeviceEnforcement{client: cliutil.NewOpenFDAClient("https://api.fda.gov")}
 }
 
 func (s *OpenFDADeviceEnforcement) Name() string    { return "openfda_device_enforcement" }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -21,10 +22,22 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
-	return fmt.Sprintf("http %d for %s: %s", e.StatusCode, e.URL, e.Snippet)
+	return redactAPIKey(fmt.Sprintf("http %d for %s: %s", e.StatusCode, e.URL, e.Snippet))
 }
 
-// Client is a small keyless JSON HTTP client with a single retry policy.
+// apiKeyValue matches the value of an api_key query parameter.
+var apiKeyValue = regexp.MustCompile(`(?i)(api_key=)[^&\s"']*`)
+
+// redactAPIKey replaces every api_key value with [REDACTED]. A backstop: the
+// openFDA transport adds the key to a clone of the request, so URL never
+// carries it — this keeps a future change that breaks that out of logs and
+// out of the browser.
+func redactAPIKey(s string) string {
+	return apiKeyValue.ReplaceAllString(s, "${1}[REDACTED]")
+}
+
+// Client is a small JSON HTTP client with a single retry policy. It is keyless
+// unless built by NewOpenFDAClient with OPENFDA_API_KEY set.
 type Client struct {
 	BaseURL   string
 	UserAgent string

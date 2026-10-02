@@ -9,7 +9,7 @@ import (
 )
 
 // OpenFDADeviceEvent is the LIVE openFDA MAUDE adapter. Endpoint:
-// https://api.fda.gov/device/event.json. Keyless.
+// https://api.fda.gov/device/event.json. Keyless unless OPENFDA_API_KEY is set.
 //
 // Severity is derived from the real field event_type (values Death, Injury,
 // Malfunction, Other) — NOT from a "serious_adverse_event_flag", which exists in
@@ -21,7 +21,7 @@ type OpenFDADeviceEvent struct {
 }
 
 func NewOpenFDADeviceEvent() *OpenFDADeviceEvent {
-	return &OpenFDADeviceEvent{client: cliutil.NewClient("https://api.fda.gov")}
+	return &OpenFDADeviceEvent{client: cliutil.NewOpenFDAClient("https://api.fda.gov")}
 }
 
 func (s *OpenFDADeviceEvent) Name() string { return "openfda_device_event" }
