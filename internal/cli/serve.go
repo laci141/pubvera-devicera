@@ -314,6 +314,15 @@ func writeJSONError(w http.ResponseWriter, status int, msg string) {
 // apiSources is the fixed source list surfaced in the meta block.
 var apiSources = []string{"openFDA MAUDE", "openFDA Enforcement", "ClinicalTrials.gov v2", "PubMed"}
 
+// lastUpdatedHTTP is the openFDA client's HTTP side (api_key when
+// OPENFDA_API_KEY is set) with the probe's own 10s timeout. The probe keeps its
+// single attempt: GetJSON's retries are not worth it for a freshness stamp.
+var lastUpdatedHTTP = func() *http.Client {
+	c := cliutil.NewOpenFDAClient("https://api.fda.gov").HTTP
+	c.Timeout = 10 * time.Second
+	return c
+}()
+
 // fetchOpenFDALastUpdated probes openFDA for its dataset timestamp. An
 // indirection so tests can stub it without a network call.
 var fetchOpenFDALastUpdated = func(ctx context.Context) string {
@@ -321,7 +330,7 @@ var fetchOpenFDALastUpdated = func(ctx context.Context) string {
 	if err != nil {
 		return ""
 	}
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	resp, err := lastUpdatedHTTP.Do(req)
 	if err != nil {
 		return ""
 	}
@@ -642,7 +651,7 @@ func productCodeSet(raw map[string]any) []map[string]any {
 // udiClient reaches openFDA directly for the one UDI search the sources
 // adapter's fixed brand/DI expression cannot ask for. Handler-level, like
 // handleTrend: the source definition stays untouched.
-var udiClient = cliutil.NewClient("https://api.fda.gov")
+var udiClient = cliutil.NewOpenFDAClient("https://api.fda.gov")
 
 // udiCategorySearch queries device/udi by FDA product-code name
 // (product_codes.openfda.device_name) — the field where "Pacemaker, Permanent,

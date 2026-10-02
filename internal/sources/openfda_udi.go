@@ -8,14 +8,15 @@ import (
 )
 
 // OpenFDADeviceUDI is the LIVE openFDA GUDID adapter. Endpoint:
-// https://api.fda.gov/device/udi.json. Keyless. It looks a device up by its
-// UDI-DI (identifiers.id) or, failing that, by brand name.
+// https://api.fda.gov/device/udi.json. Keyless unless OPENFDA_API_KEY is set.
+// It looks a device up by its UDI-DI (identifiers.id) or, failing that, by
+// brand name.
 type OpenFDADeviceUDI struct {
 	client *cliutil.Client
 }
 
 func NewOpenFDADeviceUDI() *OpenFDADeviceUDI {
-	return &OpenFDADeviceUDI{client: cliutil.NewClient("https://api.fda.gov")}
+	return &OpenFDADeviceUDI{client: cliutil.NewOpenFDAClient("https://api.fda.gov")}
 }
 
 func (s *OpenFDADeviceUDI) Name() string { return "openfda_device_udi" }
