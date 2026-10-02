@@ -647,10 +647,78 @@ var udiClient = cliutil.NewClient("https://api.fda.gov")
 // udiCategorySearch queries device/udi by FDA product-code name
 // (product_codes.openfda.device_name) — the field where "Pacemaker, Permanent,
 // Implantable" lives even when no manufacturer puts the word in a brand name.
-func udiCategorySearch(ctx context.Context, term string, limit int) ([]map[string]any, int, error) {
+//
+// openFDA serves at most 1000 records per request, so the search pages with
+// skip up to udiCategoryCap: the first page reports the total, the rest are
+// fetched in parallel. Pages are sorted on public_device_record_key (unique per
+// record), so they cannot overlap; records are still deduplicated by UDI. Only
+// a failed first page is an error: a failed later page is logged and the pages
+// that succeeded are returned, so len(records) is the real fetched count.
+func udiCategorySearch(ctx context.Context, term string) ([]map[string]any, int, error) {
+	first, total, err := udiCategoryPage(ctx, term, 0)
+	if err != nil {
+		return nil, 0, err
+	}
+	pages := [][]map[string]any{first}
+	if want := min(total, udiCategoryCap); want > udiPageSize {
+		pages = append(pages, make([][]map[string]any, (want-1)/udiPageSize)...)
+		var wg sync.WaitGroup
+		for i := 1; i < len(pages); i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				recs, _, err := udiCategoryPage(ctx, term, i*udiPageSize)
+				if err != nil {
+					reqLog.Error("upstream", "path", "/device/udi.json", "skip", i*udiPageSize, "err", err.Error())
+					return
+				}
+				pages[i] = recs
+			}()
+		}
+		wg.Wait()
+	}
+	seen := make(map[string]bool, min(total, udiCategoryCap))
+	out := make([]map[string]any, 0, min(total, udiCategoryCap))
+	for _, page := range pages {
+		for _, raw := range page {
+			if udi := str(deviceRow(raw)["udi"]); udi != "" {
+				if seen[udi] {
+					continue
+				}
+				seen[udi] = true
+			}
+			out = append(out, raw)
+		}
+	}
+	return out, total, nil
+}
+
+// udiPageSize is openFDA's maximum limit per search request; udiCategoryCap
+// bounds the category leg at three pages (Laci's decision: "pacemaker", 2,380
+// records, is complete; "stent", 9,521, stays partial and says so).
+const (
+	udiPageSize    = 1000
+	udiCategoryCap = 3000
+)
+
+// thousands formats n with comma separators: 9521 → "9,521".
+func thousands(n int) string {
+	s := strconv.Itoa(n)
+	for i := len(s) - 3; i > 0; i -= 3 {
+		s = s[:i] + "," + s[i:]
+	}
+	return s
+}
+
+// udiCategoryPage fetches one page of the category search at skip.
+func udiCategoryPage(ctx context.Context, term string, skip int) ([]map[string]any, int, error) {
 	params := url.Values{}
 	params.Set("search", cliutil.Phrase("product_codes.openfda.device_name", term))
-	params.Set("limit", strconv.Itoa(limit))
+	params.Set("limit", strconv.Itoa(udiPageSize))
+	params.Set("sort", "public_device_record_key:asc")
+	if skip > 0 {
+		params.Set("skip", strconv.Itoa(skip))
+	}
 	body, _, err := udiClient.GetJSON(ctx, "/device/udi.json", params)
 	if err != nil {
 		var apiErr *cliutil.APIError
@@ -1020,10 +1088,10 @@ func handleDevices(w http.ResponseWriter, r *http.Request) {
 	}()
 	go func() {
 		defer wg.Done()
-		// 1000 is openFDA's maximum limit for one search request; at 100 the
-		// category leg missed real devices ("pacemaker": 2,380 matches, and
-		// ACCOLADE, Serena CRT-P and ANTHEM CRT-P sat past the first 100).
-		catRecs, catTotal, catErr = udiCategorySearch(r.Context(), device, 1000)
+		// Up to udiCategoryCap records in pages of 1000: one page missed real
+		// devices ("pacemaker": 2,380 matches, 158 strong device groups, ACCOLADE
+		// MRI DR among them, sat past the first 1,000).
+		catRecs, catTotal, catErr = udiCategorySearch(r.Context(), device)
 	}()
 	wg.Wait()
 	if brandErr != nil && catErr != nil {
@@ -1039,9 +1107,9 @@ func handleDevices(w http.ResponseWriter, r *http.Request) {
 	for _, raw := range catRecs {
 		catRows = append(catRows, annotateDeviceMatch(deviceRow(raw), raw, device))
 	}
-	// Cap = brand page (100) + category page (1000): every fetched row fits, so
+	// Cap = brand page (100) + category cap (3,000): every fetched row fits, so
 	// the cut can never drop the weak matches the ranking puts last.
-	rows, dups, folded := mergeDeviceRows(brandRows, catRows, device, 1100)
+	rows, dups, folded := mergeDeviceRows(brandRows, catRows, device, 100+udiCategoryCap)
 
 	resp := map[string]any{
 		"records":          rows,
@@ -1051,7 +1119,7 @@ func handleDevices(w http.ResponseWriter, r *http.Request) {
 		"total_category":   catTotal,
 		"fetched_category": len(catRecs),
 		"folded_similar":   folded,
-		"note":             "GUDID device records via openFDA device/udi; union of a brand-name/UDI-DI search (first 100 records) and an FDA product-category search (first 1,000 records, openFDA's per-request maximum; fetched_category says how many were fetched out of total_category), deduplicated by UDI (total is approximate when the sets overlap beyond the fetched pages); near-identical rows from one company's product line are folded into a single row carrying similar_folded, and rows are ranked by structural relevance (not by device class); the row cap (1,100) holds every fetched record, so no match is cut; match_strength is strong when the query is in the device name or the shown FDA category and weak when the record matched only through a secondary FDA product code, which match_reason names; registration data may be incomplete or delayed",
+		"note":             "GUDID device records via openFDA device/udi; union of a brand-name/UDI-DI search (first 100 records) and an FDA product-category search (" + fmt.Sprintf("fetched %s of %s category records", thousands(len(catRecs)), thousands(catTotal)) + ", in pages of 1,000 up to 3,000; fetched_category says how many were fetched out of total_category), deduplicated by UDI (total is approximate when the sets overlap beyond the fetched pages); near-identical rows from one company's product line are folded into a single row carrying similar_folded, and rows are ranked by structural relevance (not by device class); the row cap (3,100) holds every fetched record, so no match is cut; match_strength is strong when the query is in the device name or the shown FDA category and weak when the record matched only through a secondary FDA product code, which match_reason names; registration data may be incomplete or delayed",
 		"disclaimer":       cliutil.Disclaimer,
 	}
 	var partial []string
