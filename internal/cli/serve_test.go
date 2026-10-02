@@ -10,8 +10,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/laci141/medical-device-intelligence/internal/cliutil"
@@ -710,6 +712,19 @@ func udiRaw(di, brand string, codes ...string) map[string]any {
 // and the limit the handler asked the category leg for.
 func devicesResponse(t *testing.T, query string, brand, category []map[string]any) (map[string]any, string) {
 	t.Helper()
+	body, reqs := devicesResponseFake(t, query, brand, category, -1)
+	gotLimit := ""
+	if len(reqs) > 0 {
+		gotLimit = reqs[len(reqs)-1].Get("limit")
+	}
+	return body, gotLimit
+}
+
+// devicesResponseFake is devicesResponse with an upstream that pages by skip,
+// like openFDA: it serves category[skip:skip+limit]. A request for failSkip
+// answers 500 (-1: none fails). It returns every category request's query.
+func devicesResponseFake(t *testing.T, query string, brand, category []map[string]any, failSkip int) (map[string]any, []url.Values) {
+	t.Helper()
 	recs := make([]sources.RawRecord, 0, len(brand))
 	for _, raw := range brand {
 		recs = append(recs, sources.RawRecord{Raw: raw})
@@ -717,11 +732,22 @@ func devicesResponse(t *testing.T, query string, brand, category []map[string]an
 	withSources(t, map[string]sources.Source{
 		"openfda_device_udi": fakeSource{name: "openfda_device_udi", id: "public_device_record_key", recs: recs},
 	})
-	var gotLimit string
+	var (
+		mu   sync.Mutex
+		reqs []url.Values
+	)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotLimit = r.URL.Query().Get("limit")
-		page := category
-		if n, err := strconv.Atoi(gotLimit); err == nil && n < len(page) {
+		q := r.URL.Query()
+		mu.Lock()
+		reqs = append(reqs, q)
+		mu.Unlock()
+		skip, _ := strconv.Atoi(q.Get("skip"))
+		if skip == failSkip {
+			http.Error(w, `{"error":{"code":"SERVER_ERROR"}}`, http.StatusInternalServerError)
+			return
+		}
+		page := category[min(skip, len(category)):]
+		if n, err := strconv.Atoi(q.Get("limit")); err == nil && n < len(page) {
 			page = page[:n]
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -744,7 +770,9 @@ func devicesResponse(t *testing.T, query string, brand, category []map[string]an
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	return body, gotLimit
+	mu.Lock()
+	defer mu.Unlock()
+	return body, reqs
 }
 
 // serveDevices is devicesResponse with the records keyed by UDI.
@@ -771,26 +799,131 @@ func letterName(i int) string {
 	}
 }
 
-// The category leg asks openFDA for 1000 records (the endpoint's maximum per
-// search request), not 100: at 100, "pacemaker" (2,380 category matches)
-// missed ACCOLADE, Serena CRT-P and ANTHEM CRT-P. fetched_category reports how
-// many were actually fetched, next to the upstream total.
-func TestDevicesCategoryLegFetches1000(t *testing.T) {
-	category := make([]map[string]any, 0, 2380)
-	for i := range 2380 {
+// categoryRecords builds n distinct category records (one company each, so
+// none fold) under a "Leadless Pacemaker" product code.
+func categoryRecords(n int) []map[string]any {
+	category := make([]map[string]any, 0, n)
+	for i := range n {
 		raw := udiRaw(fmt.Sprintf("C%04d", i), "Model "+letterName(i), "PNJ", "Leadless Pacemaker")
 		raw["company_name"] = fmt.Sprintf("Cat Co %d", i)
 		category = append(category, raw)
 	}
-	body, gotLimit := devicesResponse(t, "pacemaker", nil, category)
-	if gotLimit != "1000" {
-		t.Errorf("category leg limit=%q, want \"1000\"", gotLimit)
+	return category
+}
+
+// requestedSkips lists the skip values of the category requests, sorted, and
+// fails the test unless every request used limit=1000 and the stable sort.
+func requestedSkips(t *testing.T, reqs []url.Values) []int {
+	t.Helper()
+	skips := []int{}
+	for _, q := range reqs {
+		if q.Get("limit") != "1000" {
+			t.Errorf("limit=%q, want \"1000\"", q.Get("limit"))
+		}
+		if q.Get("sort") != "public_device_record_key:asc" {
+			t.Errorf("sort=%q, want \"public_device_record_key:asc\"", q.Get("sort"))
+		}
+		n, _ := strconv.Atoi(q.Get("skip"))
+		skips = append(skips, n)
 	}
-	if got, _ := body["fetched_category"].(float64); got != 1000 {
-		t.Errorf("fetched_category=%v, want 1000", body["fetched_category"])
+	sort.Ints(skips)
+	return skips
+}
+
+// The category leg pages through openFDA 1000 records at a time (the
+// endpoint's maximum per request), sorted on a unique key so pages never
+// overlap: at a single page, "pacemaker" (2,380 category matches) missed 158
+// strong device groups, ACCOLADE MRI DR among them.
+func TestDevicesCategoryLegPaginates(t *testing.T) {
+	body, reqs := devicesResponseFake(t, "pacemaker", nil, categoryRecords(2380), -1)
+	if got := requestedSkips(t, reqs); fmt.Sprint(got) != "[0 1000 2000]" {
+		t.Errorf("skips=%v, want [0 1000 2000]", got)
+	}
+	if got, _ := body["fetched_category"].(float64); got != 2380 {
+		t.Errorf("fetched_category=%v, want 2380", body["fetched_category"])
 	}
 	if got, _ := body["total_category"].(float64); got != 2380 {
 		t.Errorf("total_category=%v, want 2380 (the upstream total, unchanged)", body["total_category"])
+	}
+	if got := len(asMaps(body["records"])); got != 2380 {
+		t.Errorf("records=%d, want 2380", got)
+	}
+	if note := str(body["note"]); !strings.Contains(note, "fetched 2,380 of 2,380 category records") {
+		t.Errorf("note does not state the fetched count: %q", note)
+	}
+}
+
+// Paging stops at 3,000 records however large the category is, and the final
+// cap (100 brand + 3,000 category) keeps every fetched row.
+func TestDevicesCategoryLegCap3000(t *testing.T) {
+	brand := make([]map[string]any, 0, 100)
+	for i := range 100 {
+		raw := udiRaw(fmt.Sprintf("B%04d", i), "Pacemaker "+letterName(i))
+		raw["company_name"] = fmt.Sprintf("Brand Co %d", i)
+		brand = append(brand, raw)
+	}
+	body, reqs := devicesResponseFake(t, "pacemaker", brand, categoryRecords(9521), -1)
+	if got := requestedSkips(t, reqs); fmt.Sprint(got) != "[0 1000 2000]" {
+		t.Errorf("skips=%v, want [0 1000 2000] (cap 3,000)", got)
+	}
+	if got, _ := body["fetched_category"].(float64); got != 3000 {
+		t.Errorf("fetched_category=%v, want 3000", body["fetched_category"])
+	}
+	if got, _ := body["total_category"].(float64); got != 9521 {
+		t.Errorf("total_category=%v, want 9521", body["total_category"])
+	}
+	if got := len(asMaps(body["records"])); got != 3100 {
+		t.Errorf("records=%d, want 3100 (100 brand + 3,000 category, none cut)", got)
+	}
+	if note := str(body["note"]); !strings.Contains(note, "fetched 3,000 of 9,521 category records") {
+		t.Errorf("note does not state the fetched count: %q", note)
+	}
+}
+
+// A category smaller than one page costs one request, not three.
+func TestDevicesCategoryLegSmallTotalOnePage(t *testing.T) {
+	body, reqs := devicesResponseFake(t, "insulin pump", nil, categoryRecords(36), -1)
+	if got := requestedSkips(t, reqs); fmt.Sprint(got) != "[0]" {
+		t.Errorf("skips=%v, want [0]", got)
+	}
+	if got, _ := body["fetched_category"].(float64); got != 36 {
+		t.Errorf("fetched_category=%v, want 36", body["fetched_category"])
+	}
+	if note := str(body["note"]); !strings.Contains(note, "fetched 36 of 36 category records") {
+		t.Errorf("note does not state the fetched count: %q", note)
+	}
+}
+
+// A record served on two pages (the upstream order shifted between requests)
+// is counted and shown once.
+func TestDevicesCategoryLegDedupsAcrossPages(t *testing.T) {
+	category := categoryRecords(2000)
+	category[1500] = category[10] // page 2 repeats a page-1 UDI
+	body, _ := devicesResponseFake(t, "pacemaker", nil, category, -1)
+	if got, _ := body["fetched_category"].(float64); got != 1999 {
+		t.Errorf("fetched_category=%v, want 1999 (one duplicate dropped)", body["fetched_category"])
+	}
+	seen := map[string]bool{}
+	for _, r := range asMaps(body["records"]) {
+		if seen[str(r["udi"])] {
+			t.Errorf("udi %s shown twice", str(r["udi"]))
+		}
+		seen[str(r["udi"])] = true
+	}
+}
+
+// One failed extra page degrades to the pages that succeeded: still 200, and
+// fetched_category and the note report the real count.
+func TestDevicesCategoryLegFailedPageDegrades(t *testing.T) {
+	body, _ := devicesResponseFake(t, "pacemaker", nil, categoryRecords(2380), 1000)
+	if got, _ := body["fetched_category"].(float64); got != 1380 {
+		t.Errorf("fetched_category=%v, want 1380 (pages 1 and 3)", body["fetched_category"])
+	}
+	if got := len(asMaps(body["records"])); got != 1380 {
+		t.Errorf("records=%d, want 1380", got)
+	}
+	if note := str(body["note"]); !strings.Contains(note, "fetched 1,380 of 2,380 category records") {
+		t.Errorf("note does not state the fetched count: %q", note)
 	}
 }
 
