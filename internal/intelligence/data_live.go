@@ -196,7 +196,18 @@ func (liveData) DeviceTypeVolumes(ctx context.Context) (map[string]int, error) {
 	return counter.CountField(ctx, sources.Query{Limit: 100}, "device.generic_name.exact")
 }
 
+// GlobalEventTypeCounts ignores the device term, so one answer serves every
+// search; it is shared process-wide (see baseline_cache.go).
 func (liveData) GlobalEventTypeCounts(ctx context.Context) (map[string]int, error) {
+	m, err := cachedBaseline(baselines, ctx, "global_event_type_counts",
+		func(m map[string]int) bool { return len(m) == 0 }, fetchGlobalEventTypeCounts)
+	if err != nil {
+		return nil, err
+	}
+	return copyCounts(m), nil
+}
+
+func fetchGlobalEventTypeCounts(ctx context.Context) (map[string]int, error) {
 	counter, err := eventCounter()
 	if err != nil {
 		return nil, err
@@ -322,6 +333,19 @@ func (liveData) ManufacturerNameCounts(ctx context.Context, device string) (map[
 // 2026-07-09: p95 ≈ 444k). The sample is the top of the distribution, so the
 // baseline is conservative — it understates, never inflates, a volume signal.
 func (liveData) VolumeBaseline(ctx context.Context) (int, int, error) {
+	v, err := cachedBaseline(baselines, ctx, "volume_baseline",
+		func(v volumeBaseline) bool { return v.sample == 0 }, fetchVolumeBaseline)
+	return v.p95, v.sample, err
+}
+
+type volumeBaseline struct{ p95, sample int }
+
+func fetchVolumeBaseline(ctx context.Context) (volumeBaseline, error) {
+	p95, sample, err := computeVolumeBaseline(ctx)
+	return volumeBaseline{p95, sample}, err
+}
+
+func computeVolumeBaseline(ctx context.Context) (int, int, error) {
 	src, ok := sources.Get("openfda_device_event")
 	if !ok {
 		return 0, 0, fmt.Errorf("MAUDE source unavailable")

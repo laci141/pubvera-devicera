@@ -20,6 +20,7 @@ import (
 	"unicode"
 
 	"github.com/laci141/medical-device-intelligence/internal/cliutil"
+	"github.com/laci141/medical-device-intelligence/internal/intelligence"
 	"github.com/laci141/medical-device-intelligence/internal/sources"
 	"github.com/laci141/medical-device-intelligence/web"
 )
@@ -96,6 +97,7 @@ func cmdServe(ctx context.Context, stdout, stderr io.Writer, args []string) int 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
 	fmt.Fprintf(stderr, "serve: listening on :%d (Ctrl+C to stop)\n", p)
+	startBaselinePrewarm(ctx, stderr)
 
 	select {
 	case <-ctx.Done():
@@ -115,6 +117,32 @@ func cmdServe(ctx context.Context, stdout, stderr io.Writer, args []string) int 
 		}
 		return 0
 	}
+}
+
+// prewarmBaselines and prewarmEnabled are indirections so tests can count or
+// disable the startup prewarm.
+var (
+	prewarmBaselines = intelligence.PrewarmBaselines
+	prewarmEnabled   = true
+)
+
+// startBaselinePrewarm fills the two device-independent baselines in ONE
+// background goroutine, so the first search does not pay for them. It returns at
+// once and never fails the server: an error is logged as one line, without the
+// upstream URL.
+func startBaselinePrewarm(ctx context.Context, stderr io.Writer) {
+	if !prewarmEnabled {
+		return
+	}
+	go func() {
+		if err := prewarmBaselines(ctx); err != nil {
+			reason := "upstream unavailable"
+			if cliutil.IsRateLimited(err) {
+				reason = "upstream rate limit reached"
+			}
+			fmt.Fprintf(stderr, "serve: baseline prewarm failed: %s\n", reason)
+		}
+	}()
 }
 
 // apiRoute maps one GET endpoint onto a registered command run in --json mode.
