@@ -41,6 +41,15 @@ func (liveData) EventTotalWindow(ctx context.Context, device, from, to string) (
 	if !ok {
 		return 0, fmt.Errorf("MAUDE source unavailable")
 	}
+	// One shared daily count answers every window (inclusive on both ends, like
+	// the [from TO to] range); the error is returned as is so *APIError survives.
+	if dc, ok := src.(sources.DailyCounter); ok {
+		counts, err := dc.DailyCounts(ctx, device)
+		if err != nil {
+			return 0, err
+		}
+		return counts.Sum(from, to), nil
+	}
 	_, page, err := src.Fetch(ctx, sources.Query{
 		Term: device, Limit: 1,
 		DateField: "date_received", DateFrom: from, DateTo: to,
