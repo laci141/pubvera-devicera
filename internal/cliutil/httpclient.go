@@ -2,6 +2,7 @@ package cliutil
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +24,31 @@ type APIError struct {
 
 func (e *APIError) Error() string {
 	return redactAPIKey(fmt.Sprintf("http %d for %s: %s", e.StatusCode, e.URL, e.Snippet))
+}
+
+// The only two classes of upstream failure that may be sent to a browser. They
+// carry no URL, no status line and no upstream body: the full APIError text
+// goes to the server log instead.
+const (
+	MsgRateLimited  = "upstream rate limit reached"
+	MsgUnavailable  = "upstream unavailable"
+	CodeRateLimited = "rate_limited"
+	CodeUnavail     = "upstream_unavailable"
+)
+
+// IsRateLimited reports whether err is, or wraps, an upstream 429.
+func IsRateLimited(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusTooManyRequests
+}
+
+// UpstreamClass maps an upstream error to the fixed phrase and machine code
+// that are safe to send to a browser.
+func UpstreamClass(err error) (msg, code string) {
+	if IsRateLimited(err) {
+		return MsgRateLimited, CodeRateLimited
+	}
+	return MsgUnavailable, CodeUnavail
 }
 
 // apiKeyValue matches the value of an api_key query parameter.
@@ -106,14 +132,30 @@ func (c *Client) retryDelay(resp *http.Response, attempt int) (time.Duration, bo
 	return c.Backoff << attempt, true
 }
 
+// rateLimitDelay is the wait before retrying a 429, and whether to retry at
+// all. A 429 is retried only when the server itself names a wait of 0..5 whole
+// seconds in Retry-After. With no header, an unparsable one, an HTTP-date, a
+// negative or a longer wait there is nothing to go on, and retrying on our own
+// schedule would only hammer a service that just said it is overloaded.
+func rateLimitDelay(resp *http.Response) (time.Duration, bool) {
+	secs, err := strconv.Atoi(strings.TrimSpace(resp.Header.Get("Retry-After")))
+	if err != nil || secs < 0 || time.Duration(secs)*time.Second > maxRetryAfter {
+		return 0, false
+	}
+	return time.Duration(secs) * time.Second, true
+}
+
 // GetJSON issues GET BaseURL+path?params and returns the raw body and status.
 //
-// Retry policy (guardrail 6, revised 2026-09-06): up to three attempts, on a
-// 5xx OR a 429, with a doubling backoff and Retry-After honoured when the
-// server sends one. Every other 4xx is returned immediately — never retried,
-// because waiting does not turn a malformed query into a good one. Any non-2xx
-// yields an *APIError carrying a ~200-byte body snippet. A 404 is returned as
-// an *APIError with StatusCode 404 so the caller can treat it as "no records".
+// Retry policy (guardrail 6, revised 2026-09-06 and 2026-10-03): up to three
+// attempts. A 5xx or a transport error is retried with a doubling backoff
+// (Retry-After honoured on a 5xx when the server sends one). A 429 is retried
+// only when Retry-After is a whole number of seconds from 0 to 5; otherwise it
+// is returned at once (see rateLimitDelay). Every other 4xx is returned
+// immediately — never retried, because waiting does not turn a malformed query
+// into a good one. Any non-2xx yields an *APIError carrying a ~200-byte body
+// snippet. A 404 is returned as an *APIError with StatusCode 404 so the caller
+// can treat it as "no records".
 //
 // The original rule was one retry, 5xx only. It was written when the dossier
 // ran its probes one at a time; concurrent probes made 429 a real outcome
@@ -177,9 +219,16 @@ func (c *Client) GetJSON(ctx context.Context, path string, params url.Values) ([
 		case retryable(resp.StatusCode):
 			apiErr := &APIError{StatusCode: resp.StatusCode, Snippet: snippet(body), URL: u}
 			lastErr = apiErr
-			d, ok := c.retryDelay(resp, attempt)
+			var d time.Duration
+			var ok bool
+			if resp.StatusCode == http.StatusTooManyRequests {
+				d, ok = rateLimitDelay(resp)
+			} else {
+				d, ok = c.retryDelay(resp, attempt)
+			}
 			if !ok {
-				// The server asked for longer than we are willing to wait.
+				// A 5xx whose Retry-After is too long, or a 429 that names no
+				// short wait: give up and report it rather than stall the run.
 				return body, resp.StatusCode, apiErr
 			}
 			delay = d

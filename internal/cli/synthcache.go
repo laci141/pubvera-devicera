@@ -26,16 +26,26 @@ const (
 	// synthRunLimit bounds a detached run so a wedged upstream cannot pin an
 	// entry — and its goroutine — open forever.
 	synthRunLimit = 90 * time.Second
+	// synthRateLimitedTTL is how long a dossier is reused when at least one
+	// probe was rate limited by upstream. Far shorter than synthCacheTTL: such a
+	// dossier is missing readings through no fault of the device, and serving it
+	// for five minutes would keep the gap open long after the limit has lifted.
+	synthRateLimitedTTL = 60 * time.Second
 )
 
 // synthEntry is one device's run: in flight until done is closed, then holding
 // the result. Every field other than done is written once, under the group's
 // mutex, before done is closed.
+// synthNow is the clock for the cache TTLs; tests replace it.
+var synthNow = time.Now
+
 type synthEntry struct {
 	done    chan struct{}
 	dossier *intelligence.IntelligenceDossier
 	err     error
 	readyAt time.Time
+	// ttl is how long the finished result is reused (see synthRateLimitedTTL).
+	ttl time.Duration
 }
 
 type synthGroup struct {
@@ -74,8 +84,8 @@ func logSynthesis(device string, d *intelligence.IntelligenceDossier, err error,
 	// The notes name the probe and carry its error verbatim, e.g.
 	// "benchmark/severity-delta unavailable: ...". They are the answer to
 	// "which of the eleven dropped out, and why".
-	if len(d.Notes) > 0 {
-		attrs = append(attrs, "notes", d.Notes)
+	if len(d.LogNotes) > 0 {
+		attrs = append(attrs, "notes", d.LogNotes)
 	}
 	reqLog.Info("synthesis", attrs...)
 }
@@ -94,7 +104,7 @@ func (g *synthGroup) Do(ctx context.Context, device string,
 		case <-e.done:
 			// Finished. Reuse it only if it succeeded and is still fresh;
 			// a failure is never cached, so the next caller retries.
-			reuse = e.err == nil && time.Since(e.readyAt) < synthCacheTTL
+			reuse = e.err == nil && synthNow().Sub(e.readyAt) < e.ttl
 		default:
 			// Still running — join it.
 			reuse = true
@@ -116,7 +126,11 @@ func (g *synthGroup) Do(ctx context.Context, device string,
 			start := time.Now()
 			d, err := run(runCtx, device)
 			g.mu.Lock()
-			entry.dossier, entry.err, entry.readyAt = d, err, time.Now()
+			entry.dossier, entry.err, entry.readyAt = d, err, synthNow()
+			entry.ttl = synthCacheTTL
+			if d != nil && d.RateLimited {
+				entry.ttl = synthRateLimitedTTL
+			}
 			g.mu.Unlock()
 			close(entry.done)
 			logSynthesis(device, d, err, time.Since(start))
@@ -139,7 +153,7 @@ func (g *synthGroup) sweepLocked() {
 	for k, v := range g.entries {
 		select {
 		case <-v.done:
-			if time.Since(v.readyAt) > synthCacheTTL {
+			if synthNow().Sub(v.readyAt) > v.ttl {
 				delete(g.entries, k)
 			}
 		default:

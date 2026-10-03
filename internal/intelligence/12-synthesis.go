@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/laci141/medical-device-intelligence/internal/cliutil"
 )
 
 // SynthesisAnalyzer is Module 12: the capstone. It runs the module suite for
@@ -31,6 +33,12 @@ type IntelligenceDossier struct {
 	Reasoning       string   `json:"reasoning"`
 	GeneratedAt     string   `json:"generated_at"`
 	SignalsMeasured int      `json:"signals_measured"` // readable (non-Unknown) activity signals in the index
+	// RateLimited is set when at least one probe failed on an upstream 429.
+	RateLimited bool `json:"rate_limited,omitempty"`
+	// LogNotes holds the raw error text of every failed probe, URL and status
+	// included. It is for the server log only and never serialised: Notes is
+	// what leaves the process.
+	LogNotes []string `json:"-"`
 }
 
 const indexFormula = "attention_index = mean(value) over readable activity signals (volume, volume shift, corroboration, lifecycle phase, recall recency); concern signals are shown individually and never combined; measures public-record attention, NOT risk"
@@ -147,7 +155,15 @@ func (s *SynthesisAnalyzer) Synthesize(ctx context.Context, device string) (*Int
 	for i, p := range ps {
 		res := results[i]
 		if res.err != nil {
-			d.Notes = append(d.Notes, fmt.Sprintf("%s unavailable: %v", p.name, res.err))
+			// Notes leave the process (the dossier JSON), so they carry only a
+			// fixed class phrase; the raw error — upstream URL and status line
+			// included — is kept in LogNotes for the server log.
+			msg, _ := cliutil.UpstreamClass(res.err)
+			d.Notes = append(d.Notes, fmt.Sprintf("%s unavailable: %s", p.name, msg))
+			d.LogNotes = append(d.LogNotes, fmt.Sprintf("%s unavailable: %v", p.name, res.err))
+			if cliutil.IsRateLimited(res.err) {
+				d.RateLimited = true
+			}
 			continue
 		}
 		sig := res.sig
