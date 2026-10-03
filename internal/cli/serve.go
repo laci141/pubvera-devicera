@@ -246,12 +246,21 @@ func routeHandler(route apiRoute) http.HandlerFunc {
 		}
 		var out, errBuf bytes.Buffer
 		start := time.Now()
+		// The freshness lookup does not depend on the command's result, so it
+		// runs alongside it: on a cold cache the response takes
+		// max(command, lookup), not their sum. Buffered, so a command that fails
+		// (and never reads it) does not leave the goroutine blocked.
+		var lastUpdated chan string
+		if route.addMeta {
+			lastUpdated = make(chan string, 1)
+			go func() { lastUpdated <- lastUpdatedCached(r.Context()) }()
+		}
 		code := Dispatch(r.Context(), &out, &errBuf, route.argv(q))
 		switch code {
 		case 0:
 			body := out.Bytes()
 			if route.addMeta {
-				body = withMeta(r.Context(), body, start)
+				body = withMeta(body, start, <-lastUpdated)
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -350,10 +359,22 @@ var luCache struct {
 	mu  sync.Mutex
 	val string
 	at  time.Time
+	// flight is the lookup in progress, if any. /api/dossier and /api/signals
+	// arrive together on a cold cache; the second one joins it instead of
+	// making its own upstream call.
+	flight *luFlight
+}
+
+// luFlight is one upstream lookup. val is written once, before done is closed.
+type luFlight struct {
+	done chan struct{}
+	val  string
 }
 
 // lastUpdatedCached caches the openFDA dataset timestamp for an hour so the
 // freshness header doesn't cost an extra upstream round-trip per request.
+// Concurrent cold callers share one lookup and its result; a failed lookup
+// (empty string) is shared with those waiters but never cached.
 func lastUpdatedCached(ctx context.Context) string {
 	luCache.mu.Lock()
 	if luCache.val != "" && time.Since(luCache.at) < time.Hour {
@@ -361,21 +382,45 @@ func lastUpdatedCached(ctx context.Context) string {
 		luCache.mu.Unlock()
 		return v
 	}
-	luCache.mu.Unlock()
-	// Fetch without the lock so one slow upstream call doesn't serialize every
-	// request; duplicate fetches on a cold cache are harmless.
-	v := fetchOpenFDALastUpdated(ctx)
-	luCache.mu.Lock()
-	defer luCache.mu.Unlock()
-	if v != "" {
-		luCache.val, luCache.at = v, time.Now()
+	f := luCache.flight
+	if f == nil {
+		f = &luFlight{done: make(chan struct{})}
+		luCache.flight = f
+		// The lookup is detached from the first caller's context: if that
+		// browser tab goes away, the callers still waiting must not inherit the
+		// cancellation. The upstream client's own 10 s timeout bounds it. The
+		// mutex is not held while it runs, so one slow upstream call doesn't
+		// serialize every request.
+		fetchCtx := context.WithoutCancel(ctx)
+		go func() {
+			v := fetchOpenFDALastUpdated(fetchCtx)
+			luCache.mu.Lock()
+			if v != "" {
+				luCache.val, luCache.at = v, time.Now()
+			} else {
+				v = luCache.val // keep the last good value rather than blank it
+			}
+			luCache.flight = nil
+			f.val = v
+			luCache.mu.Unlock()
+			close(f.done)
+		}()
 	}
-	return luCache.val
+	luCache.mu.Unlock()
+
+	select {
+	case <-f.done:
+		return f.val
+	case <-ctx.Done():
+		// This caller gave up; the lookup continues for whoever else waits.
+		return ""
+	}
 }
 
-// withMeta folds the freshness block into a command's JSON envelope. On any
-// parse hiccup the original body passes through untouched.
-func withMeta(ctx context.Context, body []byte, start time.Time) []byte {
+// withMeta folds the freshness block into a command's JSON envelope. lastUpdated
+// is the openFDA dataset timestamp ("" when the lookup failed). On any parse
+// hiccup the original body passes through untouched.
+func withMeta(body []byte, start time.Time, lastUpdated string) []byte {
 	var obj map[string]any
 	if json.Unmarshal(body, &obj) != nil {
 		return body
@@ -383,7 +428,7 @@ func withMeta(ctx context.Context, body []byte, start time.Time) []byte {
 	obj["meta"] = map[string]any{
 		"queried_at":           time.Now().UTC().Format(time.RFC3339),
 		"response_ms":          time.Since(start).Milliseconds(),
-		"openfda_last_updated": lastUpdatedCached(ctx),
+		"openfda_last_updated": lastUpdated,
 		"sources":              apiSources,
 	}
 	b, err := json.Marshal(obj)
