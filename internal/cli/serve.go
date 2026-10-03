@@ -418,6 +418,7 @@ func handleTrend(w http.ResponseWriter, r *http.Request) {
 	}
 	rows := make([]yearCount, 0, 10)
 	var notes []string
+	rateLimited := false
 	for y := year - 9; y <= year; y++ {
 		q := sources.Query{
 			Term:      device,
@@ -428,7 +429,17 @@ func handleTrend(w http.ResponseWriter, r *http.Request) {
 		}
 		_, page, err := src.Fetch(r.Context(), q)
 		if err != nil {
-			notes = append(notes, fmt.Sprintf("%d unavailable: %v", y, err))
+			// The raw error (upstream URL, status line) goes to the log; the
+			// response carries only a fixed class phrase.
+			reqLog.Error("upstream", "path", r.URL.Path, "year", y, "err", err.Error())
+			msg, _ := cliutil.UpstreamClass(err)
+			notes = append(notes, fmt.Sprintf("%d unavailable: %s", y, msg))
+			if cliutil.IsRateLimited(err) {
+				// Nine more calls would meet the same limit: stop, and say so.
+				rateLimited = true
+				notes = append(notes, "remaining years skipped: "+cliutil.MsgRateLimited)
+				break
+			}
 			continue
 		}
 		rows = append(rows, yearCount{Year: y, Count: page.Total})
@@ -442,7 +453,26 @@ func handleTrend(w http.ResponseWriter, r *http.Request) {
 	if len(notes) > 0 {
 		resp["partial"] = notes
 	}
+	if rateLimited {
+		resp["rate_limited"] = true
+	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// writeUpstreamFailure answers a whole-endpoint upstream failure: 502, the
+// fixed "upstream data source failed" error, and a machine code naming the
+// class (rate_limited / upstream_unavailable). The raw error is logged by the
+// caller, never sent.
+func writeUpstreamFailure(w http.ResponseWriter, limited bool) {
+	code := cliutil.CodeUnavail
+	if limited {
+		code = cliutil.CodeRateLimited
+	}
+	writeJSON(w, http.StatusBadGateway, map[string]any{
+		"error":      "upstream data source failed",
+		"code":       code,
+		"disclaimer": cliutil.Disclaimer,
+	})
 }
 
 // fieldCounter is the source capability the failure-modes endpoint needs.
@@ -474,7 +504,7 @@ func handleFailureModes(w http.ResponseWriter, r *http.Request) {
 	counts, err := counter.CountField(r.Context(), sources.Query{Term: device}, "product_problems.exact")
 	if err != nil {
 		reqLog.Error("upstream", "path", r.URL.Path, "err", err.Error())
-		writeJSONError(w, http.StatusBadGateway, "upstream data source failed")
+		writeUpstreamFailure(w, cliutil.IsRateLimited(err))
 		return
 	}
 	type problem struct {
@@ -662,15 +692,19 @@ var udiClient = cliutil.NewOpenFDAClient("https://api.fda.gov")
 // fetched in parallel. Pages are sorted on public_device_record_key (unique per
 // record), so they cannot overlap; records are still deduplicated by UDI. Only
 // a failed first page is an error: a failed later page is logged and the pages
-// that succeeded are returned, so len(records) is the real fetched count.
-func udiCategorySearch(ctx context.Context, term string) ([]map[string]any, int, error) {
+// that succeeded are returned, so len(records) is the real fetched count. The
+// bool reports that a later page failed on an upstream rate limit.
+func udiCategorySearch(ctx context.Context, term string) ([]map[string]any, int, bool, error) {
 	first, total, err := udiCategoryPage(ctx, term, 0)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, false, err
 	}
 	pages := [][]map[string]any{first}
+	pageLimited := false
 	if want := min(total, udiCategoryCap); want > udiPageSize {
 		pages = append(pages, make([][]map[string]any, (want-1)/udiPageSize)...)
+		// Written by index, like pages: no goroutine touches another's slot.
+		limited := make([]bool, len(pages))
 		var wg sync.WaitGroup
 		for i := 1; i < len(pages); i++ {
 			wg.Add(1)
@@ -679,12 +713,16 @@ func udiCategorySearch(ctx context.Context, term string) ([]map[string]any, int,
 				recs, _, err := udiCategoryPage(ctx, term, i*udiPageSize)
 				if err != nil {
 					reqLog.Error("upstream", "path", "/device/udi.json", "skip", i*udiPageSize, "err", err.Error())
+					limited[i] = cliutil.IsRateLimited(err)
 					return
 				}
 				pages[i] = recs
 			}()
 		}
 		wg.Wait()
+		for _, l := range limited {
+			pageLimited = pageLimited || l
+		}
 	}
 	seen := make(map[string]bool, min(total, udiCategoryCap))
 	out := make([]map[string]any, 0, min(total, udiCategoryCap))
@@ -699,7 +737,7 @@ func udiCategorySearch(ctx context.Context, term string) ([]map[string]any, int,
 			out = append(out, raw)
 		}
 	}
-	return out, total, nil
+	return out, total, pageLimited, nil
 }
 
 // udiPageSize is openFDA's maximum limit per search request; udiCategoryCap
@@ -1085,6 +1123,7 @@ func handleDevices(w http.ResponseWriter, r *http.Request) {
 		brandErr   error
 		catRecs    []map[string]any
 		catTotal   int
+		catPageLim bool // a later category page hit an upstream rate limit
 		catErr     error
 		wg         sync.WaitGroup
 	)
@@ -1100,11 +1139,14 @@ func handleDevices(w http.ResponseWriter, r *http.Request) {
 		// Up to udiCategoryCap records in pages of 1000: one page missed real
 		// devices ("pacemaker": 2,380 matches, 158 strong device groups, ACCOLADE
 		// MRI DR among them, sat past the first 1,000).
-		catRecs, catTotal, catErr = udiCategorySearch(r.Context(), device)
+		catRecs, catTotal, catPageLim, catErr = udiCategorySearch(r.Context(), device)
 	}()
 	wg.Wait()
 	if brandErr != nil && catErr != nil {
-		writeJSONError(w, http.StatusBadGateway, brandErr.Error())
+		// The raw errors carry the upstream URL: log them, send a class only.
+		reqLog.Error("upstream", "path", r.URL.Path, "leg", "brand", "err", brandErr.Error())
+		reqLog.Error("upstream", "path", r.URL.Path, "leg", "category", "err", catErr.Error())
+		writeUpstreamFailure(w, cliutil.IsRateLimited(brandErr) || cliutil.IsRateLimited(catErr))
 		return
 	}
 
@@ -1132,14 +1174,24 @@ func handleDevices(w http.ResponseWriter, r *http.Request) {
 		"disclaimer":       cliutil.Disclaimer,
 	}
 	var partial []string
+	rateLimited := catPageLim
 	if brandErr != nil {
-		partial = append(partial, "brand-name search unavailable: "+brandErr.Error())
+		reqLog.Error("upstream", "path", r.URL.Path, "leg", "brand", "err", brandErr.Error())
+		msg, _ := cliutil.UpstreamClass(brandErr)
+		partial = append(partial, "brand-name search unavailable: "+msg)
+		rateLimited = rateLimited || cliutil.IsRateLimited(brandErr)
 	}
 	if catErr != nil {
-		partial = append(partial, "product-category search unavailable: "+catErr.Error())
+		reqLog.Error("upstream", "path", r.URL.Path, "leg", "category", "err", catErr.Error())
+		msg, _ := cliutil.UpstreamClass(catErr)
+		partial = append(partial, "product-category search unavailable: "+msg)
+		rateLimited = rateLimited || cliutil.IsRateLimited(catErr)
 	}
 	if partial != nil {
 		resp["partial"] = partial
+	}
+	if rateLimited {
+		resp["rate_limited"] = true
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

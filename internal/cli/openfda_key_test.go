@@ -149,8 +149,9 @@ func TestOpenFDAKeyOnEveryOpenFDARequestOnly(t *testing.T) {
 }
 
 // TestOpenFDAKeyNeverInResponsesOrLogs: openFDA answers 429 and device/udi.json
-// fails at transport level. The error text reaches both the browser (devices,
-// trend, dossier notes) and the log today; the key must reach neither.
+// fails at transport level. The raw error text (upstream URL, status line,
+// transport error) stays in the log and never reaches a response body, which
+// carries only a fixed class phrase; the key reaches neither.
 func TestOpenFDAKeyNeverInResponsesOrLogs(t *testing.T) {
 	bodies, logs, reqs := keyedServe(t, "keytest limited", true)
 
@@ -163,16 +164,21 @@ func TestOpenFDAKeyNeverInResponsesOrLogs(t *testing.T) {
 	if sent == 0 {
 		t.Fatal("no keyed openFDA request was made, so the leak check proves nothing")
 	}
-	// The errors under test must actually surface, or a clean output is vacuous.
-	all := strings.Join(bodies, "\n")
-	if !strings.Contains(all, "http 429 for https://api.fda.gov") {
-		t.Errorf("the 429 error text never reached a response:\n%s", all)
-	}
-	if !strings.Contains(all, "stub: connection reset by peer") {
-		t.Errorf("the transport error never reached a response:\n%s", all)
-	}
+	// The errors under test must actually surface in the log, or a clean
+	// output is vacuous.
 	if !strings.Contains(logs, "http 429 for https://api.fda.gov") {
 		t.Errorf("the 429 error text never reached the log:\n%s", logs)
+	}
+	if !strings.Contains(logs, "stub: connection reset by peer") {
+		t.Errorf("the transport error never reached the log:\n%s", logs)
+	}
+	// ...and must not reach the browser: no upstream URL, no status line, no
+	// transport error text in any response body.
+	all := strings.Join(bodies, "\n")
+	for _, leak := range []string{"http 429 for", "api.fda.gov", "://", "stub: connection reset by peer"} {
+		if strings.Contains(all, leak) {
+			t.Errorf("a response body carries %q:\n%s", leak, all)
+		}
 	}
 	assertNoKey(t, bodies, logs)
 }
