@@ -28,6 +28,7 @@
     --orb-3: rgba(14, 165, 165, 0.22);
     --glass: rgba(255, 255, 255, 0.06);
     --glass-strong: rgba(255, 255, 255, 0.09);
+    --th-solid: #19233f;
     --glass-border: rgba(255, 255, 255, 0.12);
     --glass-glow: rgba(120, 160, 255, 0.18);
     --ink:   #e8edf7;
@@ -50,6 +51,7 @@
     --orb-3: rgba(13, 148, 136, 0.12);
     --glass: rgba(255, 255, 255, 0.55);
     --glass-strong: rgba(255, 255, 255, 0.72);
+    --th-solid: #e3ecf8;
     --glass-border: rgba(12, 58, 102, 0.14);
     --glass-glow: rgba(37, 99, 235, 0.14);
     --ink:   #16233c;
@@ -703,9 +705,16 @@
 
   /* ---- Device records table ---- */
   .dev-card { padding: 1rem 1.1rem 1.2rem; }
-  .dev-table-wrap { overflow-x: auto; }
+  /* The wrap scrolls both ways (an overflow-x ancestor would stop a sticky
+     header from following the page anyway), so the header is pinned to the top
+     of this scroll area; 50 rows per page keep it short enough to reach. */
+  .dev-table-wrap { overflow: auto; max-height: 70vh; }
   .dev-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
   .dev-table th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--th-solid);
     cursor: pointer;
     user-select: none;
     text-align: left;
@@ -729,7 +738,10 @@
   .dev-table td.udi-cell a { color: var(--accent); text-decoration: none; }
   .dev-table td.udi-cell a:hover { text-decoration: underline; }
   .dev-table .desc-clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; min-width: 14em; max-width: 26em; }
-  .pc-chips { display: flex; flex-wrap: wrap; gap: 3px; min-width: 7em; }
+  .pager { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; font-size: 0.78rem; color: var(--ink-2); }
+  .pager .dl:disabled { opacity: 0.45; cursor: default; }
+  .pager .pager-info { margin-left: 4px; }
+  .pc-chips { display: flex; flex-wrap: wrap; flex-wrap: wrap; gap: 3px; min-width: 7em; }
   .pc-chip { display: inline-block; font-family: var(--mono); font-size: 0.66rem; border-radius: 999px; padding: 1px 6px; border: 1px solid var(--glass-border); background: var(--glass); white-space: nowrap; }
   .pc-chip.primary { border-color: var(--accent); color: var(--accent); font-weight: 700; }
   .weak-matches { margin-top: 1rem; border-top: 1px solid var(--glass-border); padding-top: 0.7rem; }
@@ -807,6 +819,26 @@
     margin: 0 auto;
   }
   @keyframes pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+
+  /* Progressive sections: one slot per section, filled as its endpoint answers. */
+  .slot { display: block; }
+  .usage-slot > .signals-grid > .slot { display: block; grid-column: span 2; }
+  .usage-slot > .signals-grid > .slot > .signal-card { height: 100%; }
+  /* Heights measured from the recorded pacemaker fixture at 1280 px wide
+     (overview 500, signals 1592, trend and problems 256, devices 926 = the
+     table wrap at 70vh (504) + 422 for meta row, chips, pager and weak summary).
+     Below the desktop breakpoint cards stack and heights differ: no reserve. */
+  @media (min-width: 1025px) {
+    .slot[aria-busy="true"][data-slot="overview"] { min-height: 500px; }
+    .slot[aria-busy="true"][data-slot="signals"] { min-height: 1610px; }
+    .slot[aria-busy="true"][data-slot="devices"] { min-height: calc(70vh + 422px); }
+    .slot[aria-busy="true"][data-slot="trend"],
+    .slot[aria-busy="true"][data-slot="problems"] { min-height: 256px; }
+  }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }
 
   /* ---- Entry animation: stagger fade-in-up ---- */
   .fade-in {
@@ -960,6 +992,8 @@
       <div class="inline-msg hidden" id="empty-msg">Please enter a device name to search.</div>
     </div>
   </section>
+
+  <div id="sr-status" class="sr-only" role="status" aria-live="polite"></div>
 
   <section class="results" id="results">
     <!-- Populated dynamically by JS -->
@@ -1540,58 +1574,211 @@
   // Latest /api/trend, /api/failure-modes, and /api/devices responses.
   var trendResp = null, problemsResp = null, devicesResp = null;
 
+  // Progressive rendering: doSearch builds one fixed slot per section and each
+  // endpoint fills its own slot as soon as its response is FINAL (after the
+  // retry in fetchWithRetry). Only the page-level decisions wait for more than
+  // one response: all five 503, all five network errors, the search button,
+  // and the closing "All sections loaded" announcement.
+  var ENDPOINT_URL = {
+    'dossier': '/api/dossier', 'signals': '/api/signals', 'trend': '/api/trend',
+    'failure-modes': '/api/failure-modes', 'devices': '/api/devices'
+  };
+  var ENDPOINTS = Object.keys(ENDPOINT_URL);
+  var searchId = 0;   // bumped by every doSearch; stale handlers compare against it
+  var run = null;     // state of the current search
+  var out = results;  // where the render functions append: a slot while one is being filled
+  var slots = {};
+
   function doSearch() {
     var device = input.value.trim();
+    searchId++;
+    var id = searchId;
     clearChildren(results);
     setRateLimitBanner(false);
+    announce('');
+    run = null;
+    trendResp = problemsResp = devicesResp = null;
+    lastData.udi = lastData.trend = lastData.problems = lastData.signals = null;
+    deviceView = null;
     if (!device) {
+      setLoading(false);
       emptyMsg.classList.remove('hidden');
       return;
     }
     emptyMsg.classList.add('hidden');
     currentDevice = device;
-    lastData.udi = lastData.trend = lastData.problems = lastData.signals = null;
-    deviceView = null;
 
     var enc = encodeURIComponent(device);
+    run = { id: id, resp: {}, done: 0, fullPage: false, said: {}, dossierShown: false, dossierNeedsSignals: true };
 
     setLoading(true);
     showLoadingState();
 
-    Promise.allSettled([
-      fetchWithRetry('/api/dossier?device=' + enc),
-      fetchWithRetry('/api/signals?device=' + enc),
-      fetchWithRetry('/api/trend?device=' + enc),
-      fetchWithRetry('/api/failure-modes?device=' + enc),
-      fetchWithRetry('/api/devices?device=' + enc)
-    ]).then(function (settled) {
-      // Each call succeeds or fails on its own. One that got no HTTP answer
-      // at all becomes status 0, so it costs only its own section.
-      var pair = settled.map(function (s) {
-        return s.status === 'fulfilled' ? s.value : { ok: false, status: 0, data: {} };
+    ENDPOINTS.forEach(function (ep) {
+      fetchWithRetry(ENDPOINT_URL[ep] + '?device=' + enc, id).then(null, function () {
+        // No HTTP answer at all: status 0, so it costs only its own section.
+        return { ok: false, status: 0, data: {} };
+      }).then(function (r) {
+        onFinal(id, ep, r);
       });
-      setLoading(false);
-      clearChildren(results);
-      // A sign-in or plan rejection applies to the whole account: report it
-      // once and render nothing else.
-      var rejected = authRejection(pair);
-      if (rejected) {
-        renderAuthError(rejected);
-        return;
-      }
-      if (pair.every(function (r) { return r.status === 0; })) {
-        renderNetworkError();
-        return;
-      }
-      setRateLimitBanner(pair.some(isRateLimited));
-      trendResp = pair[2];
-      problemsResp = pair[3];
-      devicesResp = pair[4];
-      lastData.trend = trendResp.ok ? (trendResp.data.records || null) : null;
-      lastData.problems = problemsResp.ok ? (problemsResp.data.records || null) : null;
-      lastData.signals = pair[1].ok ? (pair[1].data.records || null) : null;
-      renderResults(pair[0], pair[1]);
     });
+  }
+
+  // A section may only paint from a FINAL response.
+  function onFinal(id, ep, resp) {
+    if (id !== searchId || !run || run.fullPage || resp.stale) return;
+    run.resp[ep] = resp;
+    run.done++;
+    try {
+      // 401 and 403 describe the account: the first one replaces the page.
+      if (resp.status === 401 || resp.status === 403) {
+        showFullPage(function () { renderAuthError(resp); });
+        return;
+      }
+      if (isRateLimited(resp)) setRateLimitBanner(true);
+      renderEndpoint(ep, resp);
+    } finally {
+      if (!run.fullPage && run.done === ENDPOINTS.length) finishRun();
+    }
+  }
+
+  function allWithStatus(status) {
+    return ENDPOINTS.every(function (ep) { return run.resp[ep] && run.resp[ep].status === status; });
+  }
+
+  function finishRun() {
+    // One 503 only says the quota check failed for that request; the page is
+    // full-page only when all five got it. Same for "no HTTP answer at all".
+    if (allWithStatus(503)) {
+      showFullPage(function () { renderAuthError(run.resp.dossier); });
+      return;
+    }
+    if (allWithStatus(0)) {
+      showFullPage(renderNetworkError);
+      return;
+    }
+    setLoading(false);
+    removeLoadingNote();
+    announce('All sections loaded');
+  }
+
+  // Replaces the whole page with one full-page card; later responses of this
+  // search are ignored (onFinal), so they cannot touch lastData, deviceView or
+  // the banner.
+  function showFullPage(draw) {
+    run.fullPage = true;
+    clearChildren(results);
+    setRateLimitBanner(false);
+    trendResp = problemsResp = devicesResp = null;
+    lastData.udi = lastData.trend = lastData.problems = lastData.signals = null;
+    deviceView = null;
+    setLoading(false);
+    draw();
+  }
+
+  function renderEndpoint(ep, resp) {
+    if (ep === 'trend') {
+      trendResp = resp;
+      lastData.trend = resp.ok ? (resp.data.records || null) : null;
+      fillSlot('trend', 'Yearly Trend', function () {
+        var c = trendCard();
+        if (c) out.appendChild(stagger(c));
+      }, resp.ok);
+      updateUsageHeading();
+    } else if (ep === 'failure-modes') {
+      problemsResp = resp;
+      lastData.problems = resp.ok ? (resp.data.records || null) : null;
+      fillSlot('problems', 'Top Reported Problems', function () {
+        var c = problemsCard();
+        if (c) out.appendChild(stagger(c));
+      }, resp.ok);
+      updateUsageHeading();
+    } else if (ep === 'devices') {
+      devicesResp = resp;
+      fillSlot('devices', 'Device Records', renderDevicesSection, resp.ok);
+    } else {
+      if (ep === 'signals') lastData.signals = resp.ok ? (resp.data.records || null) : null;
+      renderDossierSlots();
+    }
+  }
+
+  // Dossier and signals stay joined: the overview and the signal groups draw
+  // when the dossier is final, with the signals response merged in when the
+  // dossier alone cannot supply the signals (or its meta/disclaimer).
+  function renderDossierSlots() {
+    var d = run.resp.dossier, s = run.resp.signals;
+    if (!d) return;
+    var dSignals = (d.ok && d.data.signals) || [];
+    var sufficient = d.ok && dSignals.length > 0 && !!d.data.meta &&
+      !!(d.data.disclaimer || d.data.Disclaimer);
+    if (!sufficient && !s) return;
+    if (run.dossierShown && (!run.dossierNeedsSignals || !s)) return;
+    run.dossierShown = true;
+    run.dossierNeedsSignals = !sufficient;
+
+    fillSlot('fresh', '', function () {
+      renderFreshness((d.ok && d.data.meta) || (s && s.ok && s.data.meta) || null);
+    }, true);
+    fillSlot('overview', 'Device overview', function () {
+      if (!d.ok) out.appendChild(sectionUnavailable('Device overview'));
+      else renderBentoTop(d.data, s && s.ok ? s.data : null);
+    }, d.ok);
+    fillSlot('signals', 'Signal readings', function () {
+      // With both down there are no signal cards to draw; the Device overview
+      // note already says the search came back incomplete.
+      if (!(d.ok || (s && s.ok))) return;
+      var source = dSignals.length ? dSignals : ((s && s.ok && (s.data.records || [])) || []);
+      renderSignalGroups(source);
+    }, d.ok || !!(s && s.ok));
+    fillSlot('disclaimer', '', function () {
+      var disclaimer = null;
+      if (d.ok && (d.data.disclaimer || d.data.Disclaimer)) disclaimer = d.data.disclaimer || d.data.Disclaimer;
+      else if (s && s.ok && (s.data.disclaimer || s.data.Disclaimer)) disclaimer = s.data.disclaimer || s.data.Disclaimer;
+      if (disclaimer) {
+        var disc = document.createElement('div');
+        disc.className = 'api-disclaimer';
+        disc.textContent = disclaimer;
+        out.appendChild(disc);
+      }
+    }, true);
+  }
+
+  // Fills a slot: placeholders out, real content (or the unavailable note)
+  // in, aria-busy false, one status message per section.
+  function fillSlot(name, label, draw, ok) {
+    var slot = slots[name];
+    if (!slot) return;
+    clearChildren(slot);
+    staggerIndex = 0;
+    out = slot;
+    try { draw(); } finally { out = results; }
+    slot.setAttribute('aria-busy', 'false');
+    if (label && !run.said[name]) {
+      run.said[name] = true;
+      announce(label + (ok ? ' loaded' : ' unavailable'));
+    }
+  }
+
+  // The shared "Yearly Trend & Top Problems" heading stays while at least one of its two
+  // cards is, or may still become, visible.
+  function updateUsageHeading() {
+    var usage = slots.usage;
+    if (!usage) return;
+    var pending = slots.trend.getAttribute('aria-busy') === 'true' || slots.problems.getAttribute('aria-busy') === 'true';
+    var drawn = slots.trend.children.length > 0 || slots.problems.children.length > 0;
+    usage.classList.toggle('hidden', !pending && !drawn);
+  }
+
+  // One visually hidden polite status region, outside #results. Each message
+  // is its own child, so sections that finish in the same tick are all
+  // announced; the list is emptied when a new search starts.
+  function announce(text) {
+    var el = document.getElementById('sr-status');
+    if (!el) return;
+    if (!text) { clearChildren(el); return; }
+    var line = document.createElement('div');
+    line.textContent = text;
+    el.appendChild(line);
   }
 
   // One retry, 1 s later, for a 503 (the quota check in front of /api/*
@@ -1600,12 +1787,14 @@
   // search got 200 within the same second. A 502 or any other status is never
   // retried — it means the Go handler already ran a slow upstream query, and
   // running it again doubles the load for a likely repeat of the failure.
+  // A search that is no longer current never retries: its answer is dropped.
   var RETRY_DELAY_MS = 1000;
-  function fetchWithRetry(url) {
+  function fetchWithRetry(url, id) {
     function retry() {
       return new Promise(function (resolve) {
         setTimeout(resolve, RETRY_DELAY_MS);
       }).then(function () {
+        if (id !== searchId) return { ok: false, status: 0, data: {}, stale: true };
         return fetchJson(url);
       });
     }
@@ -1656,8 +1845,25 @@
   }
 
   // ---- Skeleton loading state ----
+  // One fixed slot per section, in page order. Placeholders reuse the real card
+  // classes plus .skeleton, and each slot reserves its height while pending
+  // (see .slot[aria-busy="true"] in the CSS), so filling it does not shift the
+  // layout. aria-busy is true until the slot is filled.
+  function makeSlot(name, label, tag) {
+    var el = document.createElement(tag || 'section');
+    el.className = 'slot';
+    el.setAttribute('data-slot', name);
+    if (label) {
+      el.setAttribute('aria-busy', 'true');
+      el.setAttribute('aria-label', label);
+    }
+    slots[name] = el;
+    return el;
+  }
+
   function showLoadingState() {
     clearChildren(results);
+    slots = {};
 
     var note = document.createElement('div');
     note.className = 'skeleton-note';
@@ -1669,25 +1875,76 @@
     note.appendChild(text);
     results.appendChild(note);
 
+    results.appendChild(makeSlot('fresh', '', 'div'));
+
+    var overview = makeSlot('overview', 'Device overview');
     var top = document.createElement('div');
     top.className = 'bento-top';
+    top.setAttribute('aria-hidden', 'true');
     top.appendChild(skeletonHero());
     top.appendChild(skeletonCard('area-hl1', 3));
     top.appendChild(skeletonCard('area-hl2', 3));
     top.appendChild(skeletonCard('area-hl3', 3));
     top.appendChild(skeletonCard('area-dq', 2));
-    results.appendChild(top);
+    overview.appendChild(top);
+    results.appendChild(overview);
 
+    var devices = makeSlot('devices', 'Device Records');
+    var dev = document.createElement('div');
+    dev.className = 'glass dev-card skeleton';
+    dev.setAttribute('aria-hidden', 'true');
+    for (var j = 0; j < 8; j++) {
+      var dl = document.createElement('div');
+      dl.className = 'sk-line';
+      dl.style.width = (95 - (j % 3) * 15) + '%';
+      dl.style.marginBottom = '12px';
+      dev.appendChild(dl);
+    }
+    devices.appendChild(dev);
+    results.appendChild(devices);
+
+    var signals = makeSlot('signals', 'Signal readings');
     var grid = document.createElement('div');
     grid.className = 'signals-grid';
+    grid.setAttribute('aria-hidden', 'true');
     grid.style.marginTop = '14px';
     for (var i = 0; i < 6; i++) grid.appendChild(skeletonCard('', 3));
-    results.appendChild(grid);
+    signals.appendChild(grid);
+    results.appendChild(signals);
+
+    // Trend and problems never wait for the dossier: they have their own
+    // slot under their own heading.
+    var usage = document.createElement('div');
+    usage.className = 'usage-slot';
+    usage.setAttribute('data-slot', 'usage');
+    slots.usage = usage;
+    var heading = document.createElement('h2');
+    heading.className = 'section';
+    heading.textContent = '📈 Yearly Trend & Top Problems';
+    usage.appendChild(heading);
+    var ugrid = document.createElement('div');
+    ugrid.className = 'signals-grid';
+    var trend = makeSlot('trend', 'Yearly Trend', 'div');
+    trend.appendChild(skeletonCard('', 4, true));
+    var problems = makeSlot('problems', 'Top Reported Problems', 'div');
+    problems.appendChild(skeletonCard('', 4, true));
+    ugrid.appendChild(trend);
+    ugrid.appendChild(problems);
+    usage.appendChild(ugrid);
+    results.appendChild(usage);
+
+    results.appendChild(makeSlot('disclaimer', '', 'div'));
+  }
+
+  function removeLoadingNote() {
+    var note = results.querySelector('.skeleton-note');
+    if (note) note.remove();
   }
 
   function skeletonHero() {
     var card = document.createElement('div');
     card.className = 'glass hero-card skeleton area-hero';
+    card.setAttribute('aria-hidden', 'true');
     var circle = document.createElement('div');
     circle.className = 'sk-circle';
     card.appendChild(circle);
@@ -1698,9 +1955,10 @@
     return card;
   }
 
-  function skeletonCard(area, lines) {
+  function skeletonCard(area, lines, wide) {
     var card = document.createElement('div');
-    card.className = 'glass mini-card skeleton' + (area ? ' ' + area : '');
+    card.className = wide ? 'glass signal-card span2 skeleton' : 'glass mini-card skeleton' + (area ? ' ' + area : '');
+    card.setAttribute('aria-hidden', 'true');
     for (var i = 0; i < lines; i++) {
       var line = document.createElement('div');
       line.className = 'sk-line';
@@ -1747,6 +2005,7 @@
   function renderNetworkError() {
     var card = document.createElement('div');
     card.className = 'glass error-card';
+    card.setAttribute('role', 'alert');
     var status = document.createElement('div');
     status.className = 'status';
     status.textContent = 'Network error';
@@ -1764,22 +2023,12 @@
   // so they do NOT necessarily fail together: auth logs showed 3 incidents in 7
   // days, each with 1 of 5 requests getting 503 and the rest 200.
   //  - 401 and 403 describe the account (not signed in, plan limit, app not in
-  //    the plan): one is enough, and it is reported as ONE full-page card.
+  //    the plan): the first one is enough, and it is reported as ONE full-page
+  //    card (see onFinal).
   //  - 503 only says the quota check failed for that request. It takes the full
-  //    page only when all five got it; otherwise its section degrades alone.
+  //    page only when all five got it (see finishRun); otherwise its section
+  //    degrades alone.
   // Every other failure is handled per section.
-  function authRejection(responses) {
-    function first(status) {
-      for (var i = 0; i < responses.length; i++) {
-        if (responses[i] && responses[i].status === status) return responses[i];
-      }
-      return null;
-    }
-    var rejected = first(401) || first(403);
-    if (rejected) return rejected;
-    var all503 = responses.every(function (r) { return r && r.status === 503; });
-    return all503 ? responses[0] : null;
-  }
 
   // resets_at arrives as an ISO timestamp; show it in the reader's own locale
   // and fall back to the raw value when it is not a parseable date.
@@ -1828,6 +2077,7 @@
 
     var card = document.createElement('div');
     card.className = 'glass auth-card';
+    card.setAttribute('role', 'alert');
     var status = document.createElement('div');
     status.className = 'status';
     status.textContent = title;
@@ -1902,51 +2152,7 @@
     if (!bits.length) return;
     var bar = elDiv('freshness');
     bar.textContent = bits.join(' · ');
-    results.appendChild(bar);
-  }
-
-  function renderResults(dossierResp, signalsResp) {
-    staggerIndex = 0;
-    var anyOk = false;
-
-    var dossierSignals = (dossierResp.ok && (dossierResp.data.signals || [])) || [];
-    renderFreshness((dossierResp.ok && dossierResp.data.meta) ||
-      (signalsResp.ok && signalsResp.data.meta) || null);
-
-    if (!dossierResp.ok) {
-      results.appendChild(sectionUnavailable('Device overview'));
-    } else {
-      anyOk = true;
-      renderBentoTop(dossierResp.data, signalsResp.ok ? signalsResp.data : null);
-    }
-
-    renderDevicesSection();
-
-    // With both down there are no signal cards to draw; the Device overview
-    // note above already says the search came back incomplete.
-    var usageDrawn = false;
-    if (signalsResp.ok || dossierResp.ok) {
-      anyOk = true;
-      // Prefer the dossier's signal structs (full reasoning); fall back to the
-      // signals endpoint rows (reasoning clipped server-side).
-      var source = dossierSignals.length ? dossierSignals
-        : ((signalsResp.ok && (signalsResp.data.records || [])) || []);
-      usageDrawn = renderSignalGroups(source);
-    }
-    if (!usageDrawn) renderUsageFallback();
-
-    var disclaimer = null;
-    if (dossierResp.ok && (dossierResp.data.disclaimer || dossierResp.data.Disclaimer)) {
-      disclaimer = dossierResp.data.disclaimer || dossierResp.data.Disclaimer;
-    } else if (signalsResp.ok && (signalsResp.data.disclaimer || signalsResp.data.Disclaimer)) {
-      disclaimer = signalsResp.data.disclaimer || signalsResp.data.Disclaimer;
-    }
-    if (anyOk && disclaimer) {
-      var disc = document.createElement('div');
-      disc.className = 'api-disclaimer';
-      disc.textContent = disclaimer;
-      results.appendChild(disc);
-    }
+    out.appendChild(bar);
   }
 
   // Activity signal types: the only signals the attention index averages
@@ -2115,7 +2321,7 @@
     // Data health card: mini ring gauges for the two data-quality signals.
     top.appendChild(stagger(dataHealthCard(d, dSignals)));
 
-    results.appendChild(top);
+    out.appendChild(top);
   }
 
   function highlightCard(h, i) {
@@ -2280,15 +2486,15 @@
     return 'var(--ink-3)';
   }
 
-  // Returns true when it drew the Usage & Reports grid (and with it the trend
-  // and problems cards).
+  // Draws the four signal groups into the current slot. The trend and problems
+  // cards are not part of them: they have their own slot (see showLoadingState).
   function renderSignalGroups(records) {
     if (!records.length) {
       var empty = document.createElement('div');
       empty.className = 'inline-msg';
       empty.textContent = 'No signal records returned.';
-      results.appendChild(empty);
-      return false;
+      out.appendChild(empty);
+      return;
     }
 
     // Bucket the signals into the four groups (unknown types fold into usage).
@@ -2299,7 +2505,6 @@
       (buckets[g] = buckets[g] || []).push(n);
     });
 
-    var usageDrawn = false;
     GROUPS.forEach(function (g) {
       var list = buckets[g.id] || [];
       if (!list.length) return;
@@ -2307,49 +2512,20 @@
       var heading = document.createElement('h2');
       heading.className = 'section';
       heading.textContent = g.icon + ' ' + g.title + ' (' + list.length + ')';
-      results.appendChild(heading);
+      out.appendChild(heading);
 
       var desc = document.createElement('div');
       desc.className = 'group-desc';
       desc.textContent = g.desc;
-      results.appendChild(desc);
+      out.appendChild(desc);
 
       var grid = document.createElement('div');
       grid.className = 'signals-grid';
       list.forEach(function (n) {
         grid.appendChild(stagger(signalCard(n)));
       });
-      // The two data-endpoint cards live in the Usage & Reports group.
-      if (g.id === 'usage') {
-        usageDrawn = true;
-        var tc = trendCard();
-        if (tc) grid.appendChild(stagger(tc));
-        var pc = problemsCard();
-        if (pc) grid.appendChild(stagger(pc));
-      }
-      results.appendChild(grid);
+      out.appendChild(grid);
     });
-    return usageDrawn;
-  }
-
-  // The trend and problems cards read only their own endpoints. When no
-  // Usage & Reports group was drawn they get a section of their own; with
-  // neither card to show, nothing is drawn.
-  function renderUsageFallback() {
-    var tc = trendCard();
-    var pc = problemsCard();
-    if (!tc && !pc) return;
-
-    var heading = document.createElement('h2');
-    heading.className = 'section';
-    heading.textContent = '📊 Usage & Reports';
-    results.appendChild(heading);
-
-    var grid = document.createElement('div');
-    grid.className = 'signals-grid';
-    if (tc) grid.appendChild(stagger(tc));
-    if (pc) grid.appendChild(stagger(pc));
-    results.appendChild(grid);
   }
 
   // ---- Yearly Trend card (from /api/trend) ----
@@ -2874,7 +3050,7 @@
   function renderDevicesSection() {
     if (!devicesResp) return;
     if (!devicesResp.ok) {
-      results.appendChild(sectionUnavailable('Device Records'));
+      out.appendChild(sectionUnavailable('Device Records'));
       return;
     }
     var recs = devicesResp.data.records || [];
@@ -2912,11 +3088,11 @@
     var heading = document.createElement('h2');
     heading.className = 'section';
     heading.textContent = '📇 Device Records (' + rows.length + ')';
-    results.appendChild(heading);
+    out.appendChild(heading);
     var desc = document.createElement('div');
     desc.className = 'group-desc';
     desc.textContent = 'Matched on brand name and FDA product category, ranked by how much structural evidence supports the match (category hit, both searches agreeing, a name that is more than the query itself; FDA device class plays no part). Records whose name and shown category do not contain the search term — found only through another FDA product code on the record — are listed separately under Weak matches. Records whose name contains the search term but whose FDA category does not are ranked after every category-confirmed record. One company’s near-identical registrations are folded into a single row — see the Similar Folded column. Device names vary by manufacturer, so a major brand may not appear even when it exists — verify at AccessGUDID before concluding a device is absent. Click a column header to sort.';
-    results.appendChild(desc);
+    out.appendChild(desc);
 
     var card = document.createElement('div');
     card.className = 'glass dev-card';
@@ -2956,7 +3132,7 @@
       var tbody = document.createElement('tbody');
       table.appendChild(thead);
       table.appendChild(tbody);
-      return { table: table, tbody: tbody, headers: hdrs, rows: [] };
+      return { table: table, tbody: tbody, headers: hdrs, rows: [], page: 0, pager: null };
     }
 
     var wrap = elDiv('dev-table-wrap');
@@ -2965,6 +3141,38 @@
     wrap.appendChild(main.table);
     card.appendChild(wrap);
     var tables = [main];
+
+    // Client-side pagination: PAGE_SIZE rows per page, one pager per table.
+    // Filters, chips and sort work on ALL rows; only the result is paged.
+    var PAGE_SIZE = 50;
+    function makePager(t, label) {
+      var nav = document.createElement('nav');
+      nav.className = 'pager hidden';
+      nav.setAttribute('aria-label', label);
+      function btn(text, delta) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'dl';
+        b.textContent = text;
+        b.addEventListener('click', function () {
+          t.page += delta;
+          renderBody();
+          // A disabled button cannot hold focus: hand it to its sibling.
+          if (b.disabled) (delta > 0 ? t.pager.prev : t.pager.next).focus();
+        });
+        return b;
+      }
+      var prev = btn('Previous', -1), next = btn('Next', 1);
+      var info = document.createElement('span');
+      info.className = 'pager-info';
+      info.setAttribute('aria-live', 'polite');
+      nav.appendChild(prev);
+      nav.appendChild(next);
+      nav.appendChild(info);
+      t.pager = { nav: nav, prev: prev, next: next, info: info };
+      return nav;
+    }
+    card.appendChild(makePager(main, 'Device records pages'));
 
     // Weak matches: collapsed below the main table (native <details>), the
     // same columns plus Match Reason so each row says which code matched.
@@ -2983,6 +3191,7 @@
       weak.rows = weakRows;
       weakWrap.appendChild(weak.table);
       weakSec.appendChild(weakWrap);
+      weakSec.appendChild(makePager(weak, 'Weak matches pages'));
       card.appendChild(weakSec);
       tables.push(weak);
     }
@@ -3029,6 +3238,7 @@
           t.category = ch.cats;
           t.categoryLabel = ch.label;
         }
+        t.page = 0;
         Array.prototype.forEach.call(bar.querySelectorAll('.cat-chip'), function (b) {
           var i = +b.getAttribute('data-chip');
           var on = t.category ? (i >= 0 && t.chips[i].label === t.categoryLabel) : i === -1;
@@ -3090,7 +3300,10 @@
     function fillTable(t) {
       clearChildren(t.tbody);
       var vr = viewRows(t);
-      vr.forEach(function (r) {
+      var pages = Math.max(1, Math.ceil(vr.length / PAGE_SIZE));
+      t.page = Math.max(0, Math.min(t.page, pages - 1));
+      var from = t.page * PAGE_SIZE;
+      vr.slice(from, from + PAGE_SIZE).forEach(function (r) {
         var tr = document.createElement('tr');
         t.headers.forEach(function (h) {
           var td = document.createElement('td');
@@ -3126,8 +3339,21 @@
         t.tbody.appendChild(tr);
       });
       updateArrows(t);
+      updatePager(t, vr.length, pages, from);
       return vr.length;
     }
+
+    function updatePager(t, total, pages, from) {
+      var p = t.pager;
+      p.nav.classList.toggle('hidden', total <= PAGE_SIZE);
+      p.prev.disabled = t.page <= 0;
+      p.next.disabled = t.page >= pages - 1;
+      p.info.textContent = 'Page ' + (t.page + 1) + ' of ' + pages + ' \u00b7 rows ' +
+        fmtNum(from + 1) + '\u2013' + fmtNum(Math.min(from + PAGE_SIZE, total)) + ' of ' + fmtNum(total);
+    }
+
+    // Any filter or sort change returns both tables to page 1.
+    function firstPage() { tables.forEach(function (t) { t.page = 0; }); }
 
     function renderBody() {
       var shown = fillTable(main);
@@ -3152,16 +3378,18 @@
         if (state.sortKey !== col) { state.sortKey = col; state.sortDir = 1; }
         else if (state.sortDir === 1) { state.sortDir = -1; }
         else { state.sortKey = ''; state.sortDir = 0; }
+        firstPage();
         renderBody();
       });
     });
 
     var qf = card.querySelector('.qfilter');
-    if (qf) qf.addEventListener('input', function () { state.filter = qf.value.trim(); renderBody(); });
+    if (qf) qf.addEventListener('input', function () { state.filter = qf.value.trim(); firstPage(); renderBody(); });
     var q3 = card.querySelector('.quick-class3');
     if (q3) q3.addEventListener('click', function () {
       state.class3 = !state.class3;
       q3.classList.toggle('active', state.class3);
+      firstPage();
       renderBody();
     });
 
@@ -3186,7 +3414,7 @@
     };
 
     renderBody();
-    results.appendChild(stagger(card));
+    out.appendChild(stagger(card));
   }
 
   function signalCard(n) {
