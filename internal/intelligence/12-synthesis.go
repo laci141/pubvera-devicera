@@ -150,8 +150,11 @@ func (s *SynthesisAnalyzer) Synthesize(ctx context.Context, device string) (*Int
 	}
 	var readable []scored   // every readable non-data-quality signal (highlights)
 	sum, measured := 0.0, 0 // readable activity signals only (the index)
-	ps := s.probes()
-	results := s.runProbes(ctx, device, ps)
+	// One memo per run: the probes share identical EventTypeCounts and
+	// RecallTotal calls, which go upstream once and are dropped with the run.
+	run := &SynthesisAnalyzer{data: newRunMemo(s.data)}
+	ps := run.probes()
+	results := run.runProbes(ctx, device, ps)
 	for i, p := range ps {
 		res := results[i]
 		if res.err != nil {
