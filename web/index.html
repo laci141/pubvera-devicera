@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Devicera — Medical Device Intelligence & Regulatory Search</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%233b82f6'/%3E%3Cg fill='%23ffffff' transform='translate(32 32) scale(0.82) translate(-32 -32)'%3E%3Crect x='6' y='11' width='42' height='8.1' rx='3.7'/%3E%3Crect x='11.3' y='24' width='31.3' height='8.1' rx='3.7'/%3E%3Crect x='16.7' y='37' width='20.7' height='8.1' rx='3.7'/%3E%3Crect x='22' y='50' width='10' height='8.1' rx='3.7'/%3E%3Crect x='51' y='25.3' width='7' height='5.5' rx='2.75' opacity='0.74'/%3E%3Crect x='51' y='38.3' width='7' height='5.5' rx='2.75' opacity='0.94'/%3E%3Crect x='51' y='51.3' width='7' height='5.5' rx='2.75'/%3E%3C/g%3E%3C/svg%3E">
-<meta name="description" content="Devicera (Pubvera): search medical device registrations, UDI codes, and FDA regulatory status — open data, keyless. Adverse events, recalls, trials, and publications, explained and sourced.">
+<meta name="description" content="Devicera (Pubvera): search medical device registrations, UDI codes, and FDA regulatory status — public FDA, ClinicalTrials.gov and PubMed data. Adverse events, recalls, trials, and publications, explained and sourced.">
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js" integrity="sha384-OUW9euuUyxyHcAhTqbhI+Iyb8LMssXt/cpz0yXhs9UWG2/R/uaWdakx/4cfww7Vb" crossorigin="anonymous"></script>
 <script>
   // Apply persisted theme before first paint. Dark is the design default;
@@ -771,6 +771,10 @@
   .section-unavailable .status { font-weight: 700; margin-bottom: 4px; color: var(--ink); }
   .section-unavailable p { color: var(--ink-2); font-size: 0.9rem; }
 
+  /* One banner above the results when the FDA data service rate-limited any
+     part of the search. Same quiet glass card as the unavailable notes. */
+  .rate-limit-banner { padding: 1rem 1.2rem; margin-top: 12px; color: var(--ink-2); font-size: 0.9rem; line-height: 1.55; }
+
   /* ---- Skeleton loading ---- */
   .skeleton-note {
     display: flex;
@@ -932,7 +936,7 @@
 <header class="glass">
   <div>
     <h1 style="display:inline">Devicera</h1><span class="badge">v0.1.0</span>
-    <div class="subtitle">Search medical device registrations, UDI codes, and FDA regulatory status — open data, keyless.</div>
+    <div class="subtitle">Search medical device registrations, UDI codes, and FDA regulatory status — public FDA, ClinicalTrials.gov and PubMed data.</div>
   </div>
 </header>
 
@@ -973,8 +977,8 @@
     </div>
     <div>
       <h3>For researchers</h3>
-      <p>Sources: openFDA (device/event MAUDE, enforcement, UDI), ClinicalTrials.gov v2, PubMed — all keyless
-      public APIs, queried live with server-side totals. Every signal card carries its formula and sources
+      <p>Sources: openFDA (device/event MAUDE, enforcement, UDI), ClinicalTrials.gov v2, PubMed — public APIs (openFDA with an optional API key),
+      queried live with server-side totals. Every signal card carries its formula and sources
       under “Methodology”, and the sample size — how many records were counted — is stated per reading.</p>
     </div>
     <div>
@@ -1539,6 +1543,7 @@
   function doSearch() {
     var device = input.value.trim();
     clearChildren(results);
+    setRateLimitBanner(false);
     if (!device) {
       emptyMsg.classList.remove('hidden');
       return;
@@ -1578,6 +1583,7 @@
         renderNetworkError();
         return;
       }
+      setRateLimitBanner(pair.some(isRateLimited));
       trendResp = pair[2];
       problemsResp = pair[3];
       devicesResp = pair[4];
@@ -1606,6 +1612,29 @@
     return fetchJson(url).then(function (r) {
       return r.status === 503 ? retry() : r;
     }, retry);
+  }
+
+  // The Go side marks an upstream rate limit as "rate_limited": true on a 200
+  // body (some results missing) or as code "rate_limited" on a 502. Any one of
+  // the five responses is enough for the single banner. Nothing is retried for
+  // it: a 502 stays a 502 (see fetchWithRetry).
+  var RATE_LIMIT_TEXT = 'The FDA data service is limiting requests right now. ' +
+    'Some results may be missing \u2014 wait a minute and search again.';
+  function isRateLimited(r) {
+    var d = (r && r.data) || {};
+    if (r && r.ok) return d.rate_limited === true;
+    return !!r && r.status === 502 && d.code === 'rate_limited';
+  }
+  function setRateLimitBanner(show) {
+    var old = document.getElementById('rate-limit-banner');
+    if (old) old.remove();
+    if (!show) return;
+    var banner = document.createElement('div');
+    banner.id = 'rate-limit-banner';
+    banner.className = 'glass rate-limit-banner';
+    banner.setAttribute('role', 'status');
+    banner.textContent = RATE_LIMIT_TEXT;
+    results.parentNode.insertBefore(banner, results);
   }
 
   // Title plus a short note, in place of a section whose request failed.

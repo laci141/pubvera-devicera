@@ -890,3 +890,93 @@ test('502 is not retried', async ({ page, pageErrors }) => {
   expect(hits['trend']).toBe(1);
   expect(pageErrors).toEqual([]);
 });
+
+
+// ---- Rate-limit banner and header text (option C, B2) ----
+//
+// The Go side marks an openFDA 429 as "rate_limited": true on a 200 body, or as
+// code "rate_limited" on a 502. The page turns either into ONE banner above the
+// results; the sections keep their own unavailable note, and nothing is retried.
+
+const BANNER_TEXT =
+  'The FDA data service is limiting requests right now. Some results may be missing — wait a minute and search again.';
+const BANNER = '#rate-limit-banner';
+const SUBTITLE_TEXT =
+  'Search medical device registrations, UDI codes, and FDA regulatory status — public FDA, ClinicalTrials.gov and PubMed data.';
+
+// Answers /api/<name> with the recorded fixture plus `extra` top-level fields.
+async function markEndpoint(page: Page, name: string, extra: object) {
+  await page.route((url) => url.pathname === '/api/' + name, (route) =>
+    route.fulfill({ json: { ...fixture(name), ...extra } }));
+}
+
+test('E1 a rate_limited trend body shows one banner and the other sections render', async ({ page, pageErrors }) => {
+  await markEndpoint(page, 'trend', { rate_limited: true });
+  await searchSettled(page);
+  await expect(page.getByText(BANNER_TEXT, { exact: true })).toHaveCount(1);
+  await expect(page.locator(BANNER)).toHaveCount(1);
+  await expect(page.locator(BANNER)).toHaveText(BANNER_TEXT);
+  await expect(page.locator(BANNER)).toBeVisible();
+  // The banner sits directly above the results.
+  await expect(page.locator(BANNER + ' + #results')).toHaveCount(1);
+  await expectOnlyDegraded(page, null);
+  expect(pageErrors).toEqual([]);
+});
+
+test('E2 a 502 rate_limited on failure-modes shows the banner, the section note, and no retry', async ({ page, pageErrors }) => {
+  const hits = await failEndpoints(page, ['failure-modes'], {
+    status: 502, body: { error: 'upstream data source failed', code: 'rate_limited' } });
+  await searchSettled(page);
+  await expect(page.getByText(BANNER_TEXT, { exact: true })).toHaveCount(1);
+  await expect(page.locator(BANNER)).toHaveCount(1);
+  await expectOnlyDegraded(page, 'failure-modes');
+  expect(hits['failure-modes']).toBe(1);
+  expect(pageErrors).toEqual([]);
+});
+
+test('E3 a 502 upstream_unavailable shows no banner', async ({ page, pageErrors }) => {
+  const hits = await failEndpoints(page, ['failure-modes'], {
+    status: 502, body: { error: 'upstream data source failed', code: 'upstream_unavailable' } });
+  await searchSettled(page);
+  await expect(page.locator(BANNER)).toHaveCount(0);
+  await expect(page.getByText(BANNER_TEXT, { exact: true })).toHaveCount(0);
+  await expectOnlyDegraded(page, 'failure-modes');
+  expect(hits['failure-modes']).toBe(1);
+  expect(pageErrors).toEqual([]);
+});
+
+test('E4 a normal search has no banner, and a normal search after a rate-limited one clears it', async ({ page, pageErrors }) => {
+  // Normal first.
+  await searchSettled(page);
+  await expect(page.locator(BANNER)).toHaveCount(0);
+  await expectOnlyDegraded(page, null);
+
+  // Rate-limited: the trend answers with the marker...
+  const isTrend = (url: URL) => url.pathname === '/api/trend';
+  await page.route(isTrend, (route) =>
+    route.fulfill({ json: { ...fixture('trend'), rate_limited: true } }));
+  await page.locator('#search-btn').click();
+  await expect(page.locator('#search-btn')).toBeEnabled();
+  await expect(page.locator('#results .skeleton-note')).toHaveCount(0);
+  await expect(page.locator(BANNER)).toHaveCount(1);
+  await expect(page.locator(BANNER)).toHaveText(BANNER_TEXT);
+
+  // ...then a normal one: the banner is gone and the page is whole again.
+  await page.unroute(isTrend);
+  await page.locator('#search-btn').click();
+  await expect(page.locator('#search-btn')).toBeEnabled();
+  await expect(page.locator('#results .skeleton-note')).toHaveCount(0);
+  await expect(page.locator(BANNER)).toHaveCount(0);
+  await expect(page.getByText(BANNER_TEXT, { exact: true })).toHaveCount(0);
+  await expectOnlyDegraded(page, null);
+  expect(pageErrors).toEqual([]);
+});
+
+test('E5 subtitle has the new text and the page no longer says keyless', async ({ page, pageErrors }) => {
+  await page.goto('/');
+  await expect(page.locator('.subtitle')).toHaveText(SUBTITLE_TEXT);
+  expect(await page.content()).not.toMatch(/keyless/i);
+  await expect(page.locator('meta[name="description"]')).toHaveAttribute('content', /public FDA, ClinicalTrials\.gov and PubMed data/);
+  await expect(page.locator('body')).toContainText('public APIs (openFDA with an optional API key)');
+  expect(pageErrors).toEqual([]);
+});
