@@ -464,30 +464,53 @@ func handleTrend(w http.ResponseWriter, r *http.Request) {
 	rows := make([]yearCount, 0, 10)
 	var notes []string
 	rateLimited := false
-	for y := year - 9; y <= year; y++ {
-		q := sources.Query{
-			Term:      device,
-			Limit:     1,
-			DateField: "date_received",
-			DateFrom:  fmt.Sprintf("%d0101", y),
-			DateTo:    fmt.Sprintf("%d1231", y),
-		}
-		_, page, err := src.Fetch(r.Context(), q)
+	if dc, ok := src.(sources.DailyCounter); ok {
+		// One count for the whole history, shared (and cached) with every other
+		// caller for this device; each year is a sum over its days, Jan 1 to
+		// Dec 31 inclusive, the same boundaries as the per-year loop below.
+		counts, err := dc.DailyCounts(r.Context(), device)
 		if err != nil {
 			// The raw error (upstream URL, status line) goes to the log; the
 			// response carries only a fixed class phrase.
-			reqLog.Error("upstream", "path", r.URL.Path, "year", y, "err", err.Error())
+			reqLog.Error("upstream", "path", r.URL.Path, "err", err.Error())
 			msg, _ := cliutil.UpstreamClass(err)
-			notes = append(notes, fmt.Sprintf("%d unavailable: %s", y, msg))
+			notes = append(notes, "all years unavailable: "+msg)
 			if cliutil.IsRateLimited(err) {
-				// Nine more calls would meet the same limit: stop, and say so.
 				rateLimited = true
 				notes = append(notes, "remaining years skipped: "+cliutil.MsgRateLimited)
-				break
 			}
-			continue
+		} else {
+			for y := year - 9; y <= year; y++ {
+				rows = append(rows, yearCount{Year: y, Count: counts.Sum(fmt.Sprintf("%d0101", y), fmt.Sprintf("%d1231", y))})
+			}
 		}
-		rows = append(rows, yearCount{Year: y, Count: page.Total})
+	} else {
+		// Per-year fallback for a source without DailyCounts.
+		for y := year - 9; y <= year; y++ {
+			q := sources.Query{
+				Term:      device,
+				Limit:     1,
+				DateField: "date_received",
+				DateFrom:  fmt.Sprintf("%d0101", y),
+				DateTo:    fmt.Sprintf("%d1231", y),
+			}
+			_, page, err := src.Fetch(r.Context(), q)
+			if err != nil {
+				// The raw error (upstream URL, status line) goes to the log; the
+				// response carries only a fixed class phrase.
+				reqLog.Error("upstream", "path", r.URL.Path, "year", y, "err", err.Error())
+				msg, _ := cliutil.UpstreamClass(err)
+				notes = append(notes, fmt.Sprintf("%d unavailable: %s", y, msg))
+				if cliutil.IsRateLimited(err) {
+					// Nine more calls would meet the same limit: stop, and say so.
+					rateLimited = true
+					notes = append(notes, "remaining years skipped: "+cliutil.MsgRateLimited)
+					break
+				}
+				continue
+			}
+			rows = append(rows, yearCount{Year: y, Count: page.Total})
+		}
 	}
 	resp := map[string]any{
 		"records":    rows,

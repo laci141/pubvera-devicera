@@ -47,6 +47,15 @@ type FieldCounter interface {
 	CountField(ctx context.Context, q Query, field string) (map[string]int, error)
 }
 
+// DailyCounter is an optional capability: a source that can answer, with ONE
+// request, how many reports a subject has per received day over its whole
+// history. Any date window is then a sum over the result, so callers that need
+// many windows (a ten-year trend, the dossier's decade windows) do not make one
+// request per window. Commands type-assert for it.
+type DailyCounter interface {
+	DailyCounts(ctx context.Context, term string) (DailyCounts, error)
+}
+
 // RawRecord is one provider record: the raw JSON plus the extracted primary key.
 type RawRecord struct {
 	ID  string         // the provider's own record id
