@@ -213,6 +213,10 @@ func (f fastBackoffEvent) Fetch(ctx context.Context, q sources.Query) ([]sources
 // The real event source's client keeps the production 300/600 ms backoff and has
 // no seam reachable from this package, so the test stands in a source that
 // calls the same /device/event.json through a client with Backoff = 1 ms.
+//
+// fastBackoffEvent has no DailyCounts, so this covers the per-year FALLBACK path
+// of handleTrend. The count path's 503 answer (one "all years unavailable"
+// entry) is TestTrendCountUnavailableOnePartialEntry.
 func TestUnavailableTrendKeepsPerYearBehaviour(t *testing.T) {
 	client := cliutil.NewOpenFDAClient("https://api.fda.gov")
 	client.Backoff = time.Millisecond
