@@ -1,4 +1,4 @@
-import { test as base, expect, type Page } from '@playwright/test';
+import { test as base, expect, type Page, type Route } from '@playwright/test';
 import fs from 'fs';
 import path from 'path';
 
@@ -136,7 +136,9 @@ test('smoke: pacemaker search renders hero, signals and device table', async ({ 
 
   await expect(page.locator('h2.section', { hasText: 'Device Records' })).toHaveText(
     '📇 Device Records (' + devices.records.length + ')');
-  await expect(page.locator(MAIN_ROWS)).toHaveCount(strongRecords(devices).length);
+  // 50 rows per page; the pager and the 'x / y rows' count carry the total.
+  await expect(page.locator(MAIN_ROWS)).toHaveCount(Math.min(50, strongRecords(devices).length));
+  await expect(page.locator('.qcount')).toHaveText(' · ' + strongRecords(devices).length + ' / ' + strongRecords(devices).length + ' rows');
   // The category search fetched fewer records than it matched: the meta line
   // says so, so a device past the first page is not read as absent.
   expect(devices.fetched_category).toBeLessThan(devices.total_category);
@@ -270,7 +272,14 @@ test('weak matches: main table is strong-only, weak section is collapsed and exp
   await search(page);
 
   // Main table: exactly the strong rows, by UDI.
-  const mainUDIs = (await page.locator(MAIN_ROWS + ' td.udi-cell').allTextContents()).map((s) => s.replace(/\s*↗$/, ''));
+  // (the table is paged, 50 per page: walk every page with Next)
+  const mainUDIs: string[] = [];
+  const nextMain = page.locator('nav[aria-label="Device records pages"]').getByRole('button', { name: 'Next' });
+  for (;;) {
+    mainUDIs.push(...(await page.locator(MAIN_ROWS + ' td.udi-cell').allTextContents()).map((s) => s.replace(/\s*↗$/, '')));
+    if (await nextMain.isDisabled()) break;
+    await nextMain.click();
+  }
   expect(mainUDIs.sort()).toEqual(strong.map((r: any) => r.udi).sort());
   // Category chips are built from the strong rows only.
   await expect(page.locator('.dev-card .cat-chip').first()).toHaveText('All' + strong.length);
@@ -290,13 +299,13 @@ test('weak matches: main table is strong-only, weak section is collapsed and exp
   await section.locator('summary').click();
   await expect(section).toHaveAttribute('open', '');
   const weakRows = section.locator('tbody tr');
-  await expect(weakRows).toHaveCount(weak.length);
+  await expect(weakRows).toHaveCount(Math.min(50, weak.length)); // first page of the weak table
   await expect(weakRows.first()).toBeVisible();
   const headers = (await section.locator('thead th').allTextContents()).map((h) => h.replace(/[⇅↑↓]$/, ''));
   const reasonIdx = headers.indexOf('Match Reason');
   expect(reasonIdx, 'weak table headers: ' + headers.join(' | ')).toBeGreaterThanOrEqual(0);
   const reasons = await weakRows.locator('td:nth-child(' + (reasonIdx + 1) + ')').allTextContents();
-  expect(reasons).toHaveLength(weak.length);
+  expect(reasons).toHaveLength(Math.min(50, weak.length));
   for (const r of reasons) expect(r).toContain('Secondary FDA code');
 
   expect(pageErrors).toEqual([]);
@@ -586,8 +595,9 @@ test('chip bars: pacemaker chip counts match the rows each chip shows, in both b
       const chip = page.locator(chips).nth(i);
       const want = Number(await chip.locator('.cnt').textContent());
       await chip.click();
-      await expect(page.locator(rows), 'chip ' + (await chip.textContent())).toHaveCount(want);
-      await expect(page.locator(other)).toHaveCount(otherTotal);
+      // Tables are paged (50 rows): a chip shows min(count, 50) rows on page 1.
+      await expect(page.locator(rows), 'chip ' + (await chip.textContent())).toHaveCount(Math.min(want, 50));
+      await expect(page.locator(other)).toHaveCount(Math.min(otherTotal, 50));
       await chip.click(); // back to All
     }
   }
@@ -752,9 +762,10 @@ test('503 on all five stays full-page', async ({ page }) => {
 // ---- Several failed /api calls: the trend and problems cards stand alone ----
 //
 // The two cards read only /api/trend and /api/failure-modes. Without signal
-// cards in the Usage & Reports group they get a section of their own.
+// cards in the Usage & Reports group they get a section of their own, headed
+// "Yearly Trend & Top Problems".
 
-const USAGE_FALLBACK_HEADING = '📊 Usage & Reports';
+const USAGE_FALLBACK_HEADING = '📈 Yearly Trend & Top Problems';
 
 // Every section fed by a failed endpoint shows its unavailable note; the
 // trend and problems cards follow their own endpoint only.
@@ -779,7 +790,8 @@ test('503 on dossier + signals keeps the trend and problems cards', async ({ pag
   await failEndpoints(page, ['dossier', 'signals'], QUOTA_503);
   await searchSettled(page);
   await expectDegraded(page, ['dossier', 'signals']);
-  await expect(page.locator('h2.section', { hasText: 'Usage & Reports' })).toHaveText(USAGE_FALLBACK_HEADING);
+  await expect(page.locator('h2.section', { hasText: 'Yearly Trend & Top Problems' })).toHaveText(USAGE_FALLBACK_HEADING);
+  await expect(page.locator(SLOT('usage') + ' .signal-card')).toHaveCount(2); // trend + problems, in their own slot
   expect(pageErrors).toEqual([]);
 });
 
@@ -787,7 +799,8 @@ test('503 on dossier + signals + trend marks Yearly Trend unavailable on its own
   await failEndpoints(page, ['dossier', 'signals', 'trend'], QUOTA_503);
   await searchSettled(page);
   await expectDegraded(page, ['dossier', 'signals', 'trend']);
-  await expect(page.locator('h2.section', { hasText: 'Usage & Reports' })).toHaveText(USAGE_FALLBACK_HEADING);
+  await expect(page.locator('h2.section', { hasText: 'Yearly Trend & Top Problems' })).toHaveText(USAGE_FALLBACK_HEADING);
+  await expect(page.locator(SLOT('usage') + ' .signal-card')).toHaveCount(2); // trend + problems, in their own slot
   expect(pageErrors).toEqual([]);
 });
 
@@ -807,7 +820,19 @@ test('no usage-group signals still shows the trend and problems cards', async ({
   await expect(page.locator(SIGNAL_CARD)).toHaveCount(dossier.signals.length);
   await expect(page.locator(TREND_CARD)).toHaveCount(1);
   await expect(page.locator(PROBLEMS_CARD)).toHaveCount(1);
-  await expect(page.locator('h2.section', { hasText: 'Usage & Reports' })).toHaveText(USAGE_FALLBACK_HEADING);
+  await expect(page.locator('h2.section', { hasText: 'Yearly Trend & Top Problems' })).toHaveText(USAGE_FALLBACK_HEADING);
+  await expect(page.locator(SLOT('usage') + ' .signal-card')).toHaveCount(2); // trend + problems, in their own slot
+  expect(pageErrors).toEqual([]);
+});
+
+test('normal search has exactly one "Usage & Reports" heading: the signal group, not the trend slot', async ({ page, pageErrors }) => {
+  await searchSettled(page);
+  const starts = await page.evaluate(() => Array.from(document.querySelectorAll('#results *'))
+    .filter((el) => el.children.length === 0 && (el.textContent || '').trim().startsWith('📊 Usage & Reports'))
+    .map((el) => (el.textContent || '').trim()));
+  expect(starts).toHaveLength(1);
+  expect(starts[0]).toMatch(/^📊 Usage & Reports \(\d+\)$/);
+  await expect(page.locator(SLOT('usage') + ' h2.section')).toHaveText(USAGE_FALLBACK_HEADING);
   expect(pageErrors).toEqual([]);
 });
 
@@ -978,5 +1003,564 @@ test('E5 subtitle has the new text and the page no longer says keyless', async (
   expect(await page.content()).not.toMatch(/keyless/i);
   await expect(page.locator('meta[name="description"]')).toHaveAttribute('content', /public FDA, ClinicalTrials\.gov and PubMed data/);
   await expect(page.locator('body')).toContainText('public APIs (openFDA with an optional API key)');
+  expect(pageErrors).toEqual([]);
+});
+
+
+// ---- Progressive sections (O7): each slot renders when its endpoint is final ----
+//
+// Placeholders reuse the real card classes plus .skeleton, so "real content"
+// below means the same selector minus .skeleton.
+
+const HERO = '.hero-card:not(.skeleton)';
+const DEV_CARD = '.dev-card:not(.skeleton)';
+const SLOT = (name: string) => '[data-slot="' + name + '"]';
+const SR_STATUS = '#sr-status';
+
+type Gate = { wait: Promise<void>; open: () => void };
+function gate(): Gate {
+  let open!: () => void;
+  const wait = new Promise<void>((r) => { open = r; });
+  return { wait, open };
+}
+
+type Handler = (route: Route, n: number) => Promise<void> | void;
+
+// Per-endpoint handlers; an endpoint without one falls back to the offline
+// guard's fixture. `n` is the 1-based request count of that endpoint.
+// Returns the live request counts.
+async function scripted(page: Page, handlers: Record<string, Handler>) {
+  const calls: Record<string, number> = {};
+  await page.route((url) => url.pathname.startsWith('/api/'), async (route) => {
+    const name = new URL(route.request().url()).pathname.slice('/api/'.length);
+    calls[name] = (calls[name] || 0) + 1;
+    try {
+      const h = handlers[name];
+      if (h) await h(route, calls[name]);
+      else await route.fallback();
+    } catch { /* the page went away while the response was held */ }
+  });
+  return calls;
+}
+
+// Holds the named endpoints until their gate opens, then serves the fixture.
+function held(names: string[]) {
+  const gates: Record<string, Gate> = {};
+  const handlers: Record<string, Handler> = {};
+  for (const n of names) {
+    gates[n] = gate();
+    handlers[n] = async (route) => { await gates[n].wait; await route.fallback(); };
+  }
+  return { gates, handlers, open: (...ns: string[]) => ns.forEach((n) => gates[n].open()) };
+}
+
+const status503: Handler = (r) => r.fulfill({ status: 503, contentType: 'application/json', body: '{}' });
+
+async function startSearch(page: Page) {
+  await page.goto('/');
+  await page.locator('#device-input').fill(DEVICE);
+  await page.locator('#search-btn').click();
+}
+
+// Collects the path of every finished /api response of this page.
+function countResponses(page: Page) {
+  const seen: string[] = [];
+  page.on('response', (r) => {
+    const p = new URL(r.url()).pathname;
+    if (p.startsWith('/api/')) seen.push(p);
+  });
+  return seen;
+}
+
+test('P1 sections appear in endpoint order: problems and trend first, hero last', async ({ page, pageErrors }) => {
+  const h = held(['dossier', 'signals', 'devices']);
+  await scripted(page, h.handlers);
+  await startSearch(page);
+  await expect(page.locator(PROBLEMS_CARD)).toHaveCount(1);
+  await expect(page.locator(TREND_CARD)).toHaveCount(1);
+  await expect(page.locator(HERO)).toHaveCount(0);
+  await expect(page.locator(DEV_CARD)).toHaveCount(0);
+  await expect(page.locator('#search-btn')).toBeDisabled();
+  h.open('devices');
+  await expect(page.locator(DEV_CARD)).toHaveCount(1);
+  await expect(page.locator(HERO)).toHaveCount(0);
+  h.open('dossier', 'signals');
+  await expect(page.locator(HERO)).toHaveCount(1);
+  await expect(page.locator('#search-btn')).toBeEnabled();
+  expect(pageErrors).toEqual([]);
+});
+
+test('P2 the first 401 replaces the page even with the other four delayed; nothing is painted afterwards', async ({ page, pageErrors }) => {
+  const h = held(['dossier', 'signals', 'failure-modes', 'devices']);
+  const seen = countResponses(page);
+  await scripted(page, {
+    ...h.handlers,
+    trend: (route) => route.fulfill({ status: 401, contentType: 'application/json', body: '{"error":"missing/invalid token"}' }),
+  });
+  await startSearch(page);
+  await expectFullPage(page, 'Sign-in required');
+  await expect(page.locator('.auth-card')).toHaveAttribute('role', 'alert');
+  await expect(page.locator('#search-btn')).toBeEnabled();
+  h.open('dossier', 'signals', 'failure-modes', 'devices');
+  await expect.poll(() => seen.length).toBe(5);
+  await page.waitForTimeout(300);
+  await expectFullPage(page, 'Sign-in required');
+  await expect(page.locator(PROBLEMS_CARD)).toHaveCount(0);
+  await expect(page.locator('#rate-limit-banner')).toHaveCount(0);
+  expect(pageErrors).toEqual([]);
+});
+
+for (const [status, body, title] of [
+  [401, { error: 'missing/invalid token' }, 'Sign-in required'],
+  [403, { error: 'quota exceeded', resets_at: '2026-10-01T00:00:00Z' }, 'Search limit reached'],
+] as const) {
+  test('P3 a late ' + status + ' clears the sections that were already painted', async ({ page, pageErrors }) => {
+    const h = held(['trend']);
+    await scripted(page, {
+      trend: async (route) => {
+        await h.gates.trend.wait;
+        await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+      },
+    });
+    await startSearch(page);
+    await expect(page.locator(HERO)).toHaveCount(1);
+    await expect(page.locator(DEV_CARD)).toHaveCount(1);
+    await expect(page.locator(PROBLEMS_CARD)).toHaveCount(1);
+    h.open('trend');
+    await expectFullPage(page, title);
+    await expect(page.locator(PROBLEMS_CARD)).toHaveCount(0);
+    await expect(page.locator('#search-btn')).toBeEnabled();
+    expect(pageErrors).toEqual([]);
+  });
+}
+
+test('P4 four 503 + one pending stays degraded; the fifth 503 flips to the full-page card', async ({ page, pageErrors }) => {
+  const h = held(['devices']);
+  await scripted(page, {
+    dossier: status503, signals: status503, trend: status503, 'failure-modes': status503,
+    devices: async (r, n) => { await h.gates.devices.wait; await status503(r, n); },
+  });
+  await startSearch(page);
+  // Dossier, trend and problems are final (after their 1 s retry) and say so.
+  await expect(page.locator(UNAVAILABLE + ':not(.skeleton)')).toHaveCount(3, { timeout: 8000 });
+  await expect(page.locator('.auth-card')).toHaveCount(0);
+  await expect(page.locator('#search-btn')).toBeDisabled();
+  h.open('devices');
+  await expectFullPage(page, 'Temporarily unavailable');
+  await expect(page.locator('#search-btn')).toBeEnabled();
+  expect(pageErrors).toEqual([]);
+});
+
+test('P4 four 503 + one 200 stays degraded', async ({ page, pageErrors }) => {
+  const h = held(['devices']);
+  await scripted(page, { dossier: status503, signals: status503, trend: status503, 'failure-modes': status503, ...h.handlers });
+  await startSearch(page);
+  await expect(page.locator(UNAVAILABLE + ':not(.skeleton)')).toHaveCount(3, { timeout: 8000 });
+  h.open('devices');
+  await expect(page.locator(DEV_CARD)).toHaveCount(1);
+  await expect(page.locator('#search-btn')).toBeEnabled();
+  await expect(page.locator('.auth-card')).toHaveCount(0);
+  await expect(page.locator('.error-card')).toHaveCount(0);
+  expect(pageErrors).toEqual([]);
+});
+
+test('P4 all five dropped connections show the network card with role alert', async ({ page, pageErrors }) => {
+  await failEndpoints(page, API_ENDPOINTS, 'drop');
+  await searchSettled(page);
+  await expect(page.locator('.error-card .status')).toHaveText('Network error');
+  await expect(page.locator('.error-card')).toHaveAttribute('role', 'alert');
+  await expect(page.locator(UNAVAILABLE)).toHaveCount(0);
+  expect(pageErrors).toEqual([]);
+});
+
+test('P5 a stale response of an older search is ignored (page and CSV show only the newer one)', async ({ page, pageErrors }) => {
+  const devices = fixture('devices');
+  const g = gate();
+  const seen = countResponses(page);
+  const stale = (make: () => any): Handler => async (route, n) => {
+    if (n === 1) {
+      await g.wait;
+      return route.fulfill({ json: make() });
+    }
+    return route.fallback();
+  };
+  await scripted(page, {
+    dossier: stale(() => ({ ...fixture('dossier'), device: 'STALE-A' })),
+    signals: stale(() => fixture('signals')),
+    trend: stale(() => fixture('trend')),
+    'failure-modes': stale(() => fixture('failure-modes')),
+    devices: stale(() => ({ ...devices, records: devices.records.slice(0, 1), total: 1 })),
+  });
+  await startSearch(page); // search A: everything held
+  await page.locator('#device-input').press('Enter'); // search B while A is pending
+  await expect(page.locator(HERO)).toHaveCount(1);
+  await expect(page.locator(DEV_CARD)).toHaveCount(1);
+  await expect(page.locator(HERO + ' .device-name')).toHaveText(DEVICE);
+  g.open();
+  await expect.poll(() => seen.length).toBe(10);
+  await page.waitForTimeout(300);
+  await expect(page.locator(HERO + ' .device-name')).toHaveText(DEVICE);
+  await expect(page.locator('h2.section', { hasText: 'Device Records' })).toHaveText('📇 Device Records (' + devices.records.length + ')');
+  const download = page.waitForEvent('download');
+  await page.locator(DEV_CARD + ' button', { hasText: 'CSV' }).click();
+  const file = await (await download).path();
+  const lines = parseCSV(fs.readFileSync(file!, 'utf8').replace(/^﻿/, ''));
+  expect(lines.slice(3).filter((r) => r.length > 1)).toHaveLength(devices.records.length);
+  expect(pageErrors).toEqual([]);
+});
+
+test('P6 a 503 keeps its section pending for the 1 s retry while the others render, then it renders', async ({ page, pageErrors }) => {
+  const calls = await scripted(page, {
+    devices: (route, n) => (n === 1 ? status503(route, n) : route.fallback()),
+  });
+  await startSearch(page);
+  const t0 = Date.now();
+  await expect(page.locator(HERO)).toHaveCount(1);
+  await expect(page.locator(DEV_CARD)).toHaveCount(0);
+  await expect(page.locator(SLOT('devices'))).toHaveAttribute('aria-busy', 'true');
+  await expect(page.locator(DEV_CARD)).toHaveCount(1);
+  expect(Date.now() - t0).toBeGreaterThanOrEqual(500); // t0 is taken after the click, the 1 s delay started before it
+  expect(calls['devices']).toBe(2);
+  expect(pageErrors).toEqual([]);
+});
+
+test('P6 a new search during the 1 s retry does not fire the old retry', async ({ page, pageErrors }) => {
+  const calls = await scripted(page, {
+    devices: (route, n) => (n === 1 ? status503(route, n) : route.fallback()),
+  });
+  await startSearch(page);
+  await page.waitForTimeout(300); // inside the 1 s retry delay
+  await page.locator('#device-input').press('Enter'); // search B
+  await expect(page.locator(DEV_CARD)).toHaveCount(1);
+  await page.waitForTimeout(1500); // past where A's retry would fire
+  expect(calls['devices']).toBe(2); // A's first try + B; no retry of A
+  expect(pageErrors).toEqual([]);
+});
+
+test('P7 the banner appears on the first limited final response, stays, and clears on a new search', async ({ page, pageErrors }) => {
+  const h = held(['dossier', 'signals']);
+  const g2 = gate();
+  await scripted(page, {
+    trend: (route) => route.fulfill({ json: { ...fixture('trend'), rate_limited: true } }),
+    dossier: async (route, n) => { await (n === 1 ? h.gates.dossier : g2).wait; await route.fallback(); },
+    signals: async (route, n) => { await (n === 1 ? h.gates.signals : g2).wait; await route.fallback(); },
+  });
+  await startSearch(page);
+  await expect(page.locator(BANNER)).toHaveCount(1);
+  await expect(page.locator(HERO)).toHaveCount(0);
+  h.open('dossier', 'signals');
+  await expect(page.locator(HERO)).toHaveCount(1);
+  await expect(page.locator(BANNER)).toHaveCount(1);
+  await expect(page.locator('#search-btn')).toBeEnabled();
+  await page.locator('#search-btn').click(); // new search, dossier held again
+  await expect(page.locator(BANNER)).toHaveCount(1); // trend of the new search is limited again: back at once
+  g2.open();
+  await expect(page.locator('#search-btn')).toBeEnabled();
+  expect(pageErrors).toEqual([]);
+});
+
+test('P7 a new search clears the banner at its start when nothing of it is limited', async ({ page, pageErrors }) => {
+  let limited = true;
+  const g2 = gate();
+  await scripted(page, {
+    trend: (route) => route.fulfill({ json: limited ? { ...fixture('trend'), rate_limited: true } : fixture('trend') }),
+    dossier: async (route) => { if (!limited) await g2.wait; await route.fallback(); },
+  });
+  await startSearch(page);
+  await expect(page.locator(BANNER)).toHaveCount(1);
+  await expect(page.locator('#search-btn')).toBeEnabled();
+  limited = false;
+  await page.locator('#search-btn').click(); // dossier held: the search is still running
+  await expect(page.locator(PROBLEMS_CARD)).toHaveCount(1);
+  await expect(page.locator(BANNER)).toHaveCount(0);
+  g2.open();
+  await expect(page.locator('#search-btn')).toBeEnabled();
+  await expect(page.locator(BANNER)).toHaveCount(0);
+  expect(pageErrors).toEqual([]);
+});
+
+test('P8 export buttons exist only for painted cards and the CSV matches the rows after a progressive paint', async ({ page, pageErrors }) => {
+  const devices = fixture('devices');
+  const h = held(['dossier', 'signals', 'trend', 'failure-modes']);
+  await scripted(page, h.handlers);
+  await startSearch(page);
+  await expect(page.locator(DEV_CARD)).toHaveCount(1);
+  await expect(page.locator('button', { hasText: 'CSV' })).toHaveCount(1);
+  await expect(page.locator(HERO)).toHaveCount(0);
+  const download = page.waitForEvent('download');
+  await page.locator(DEV_CARD + ' button', { hasText: 'CSV' }).click();
+  const file = await (await download).path();
+  const lines = parseCSV(fs.readFileSync(file!, 'utf8').replace(/^﻿/, ''));
+  expect(lines.slice(3).filter((r) => r.length > 1)).toHaveLength(devices.records.length);
+  h.open('dossier', 'signals', 'trend', 'failure-modes');
+  await expect(page.locator(HERO)).toHaveCount(1);
+  await expect(page.locator('button', { hasText: 'CSV' })).toHaveCount(1);
+  expect(pageErrors).toEqual([]);
+});
+
+test('P9 the search button stays disabled until all five responses are final', async ({ page, pageErrors }) => {
+  const h = held(['dossier']);
+  await scripted(page, h.handlers);
+  await startSearch(page);
+  await expect(page.locator(PROBLEMS_CARD)).toHaveCount(1);
+  await expect(page.locator(DEV_CARD)).toHaveCount(1);
+  await expect(page.locator('#search-btn')).toBeDisabled();
+  h.open('dossier');
+  await expect(page.locator('#search-btn')).toBeEnabled();
+  await expect(page.locator('#results .skeleton-note')).toHaveCount(0);
+  expect(pageErrors).toEqual([]);
+});
+
+test('P10 filling a slot does not change its height by more than the tolerance', async ({ page, pageErrors }) => {
+  // Device Records is paginated (50 rows), so its slot can reserve page 1.
+  // The signal group count varies.
+  const TOL: Record<string, number> = { overview: 24, signals: 120, devices: 60, trend: 24, problems: 24 };
+  const names = ['overview', 'signals', 'devices', 'trend', 'problems'];
+  const h = held(API_ENDPOINTS);
+  await scripted(page, h.handlers);
+  await startSearch(page);
+  const heights = async () => Promise.all(names.map((n) =>
+    page.locator(SLOT(n)).evaluate((el) => el.getBoundingClientRect().height)));
+  for (const n of names) await expect(page.locator(SLOT(n))).toHaveAttribute('aria-busy', 'true');
+  const pending = await heights();
+  h.open(...API_ENDPOINTS);
+  await expect(page.locator('#search-btn')).toBeEnabled();
+  await page.waitForTimeout(700); // the fade-in animation
+  const filled = await heights();
+  const report = names.map((n, i) => n + ' pending ' + Math.round(pending[i]) + ' filled ' + Math.round(filled[i]));
+  names.forEach((n, i) => {
+    expect(Math.abs(filled[i] - pending[i]), report.join(' | ')).toBeLessThanOrEqual(TOL[n]);
+  });
+  expect(pageErrors).toEqual([]);
+});
+
+test('P11 aria-busy goes true to false per slot, one status message per section, focus stays put', async ({ page, pageErrors }) => {
+  await page.addInitScript(() => {
+    (window as any).__sr = [];
+    document.addEventListener('DOMContentLoaded', () => {
+      const el = document.getElementById('sr-status');
+      if (!el) return;
+      new MutationObserver((records) => {
+        for (const r of records) r.addedNodes.forEach((n) => { if (n.textContent) (window as any).__sr.push(n.textContent); });
+      }).observe(el, { childList: true });
+    });
+  });
+  const h = held(['dossier', 'signals']);
+  await scripted(page, h.handlers);
+  await startSearch(page);
+  await expect(page.locator(SLOT('trend'))).toHaveAttribute('aria-busy', 'false');
+  await expect(page.locator(SLOT('problems'))).toHaveAttribute('aria-busy', 'false');
+  await expect(page.locator(SLOT('devices'))).toHaveAttribute('aria-busy', 'false');
+  await expect(page.locator(SLOT('overview'))).toHaveAttribute('aria-busy', 'true');
+  await expect(page.locator(SLOT('signals'))).toHaveAttribute('aria-busy', 'true');
+  const focusBefore = await page.evaluate(() => document.activeElement && document.activeElement.tagName + '#' + document.activeElement.id);
+  h.open('dossier', 'signals');
+  await expect(page.locator(SLOT('overview'))).toHaveAttribute('aria-busy', 'false');
+  await expect(page.locator(SLOT('signals'))).toHaveAttribute('aria-busy', 'false');
+  await expect(page.locator(SR_STATUS + ' > div').last()).toHaveText('All sections loaded');
+  await expect(page.locator(SR_STATUS)).toHaveAttribute('role', 'status');
+  await expect(page.locator(SR_STATUS)).toHaveAttribute('aria-live', 'polite');
+  await expect(page.locator('#results ' + SR_STATUS)).toHaveCount(0);
+  expect(await page.evaluate(() => document.activeElement && document.activeElement.tagName + '#' + document.activeElement.id)).toBe(focusBefore);
+  const said: string[] = await page.evaluate(() => (window as any).__sr);
+  expect([...said].sort()).toEqual([
+    'All sections loaded', 'Device Records loaded', 'Device overview loaded',
+    'Signal readings loaded', 'Top Reported Problems loaded', 'Yearly Trend loaded',
+  ].sort());
+  expect(pageErrors).toEqual([]);
+});
+
+test('P12 trend and problems render under Usage & Reports while the dossier is delayed', async ({ page, pageErrors }) => {
+  const h = held(['dossier', 'signals']);
+  await scripted(page, h.handlers);
+  await startSearch(page);
+  await expect(page.locator(SLOT('usage') + ' h2.section')).toHaveText(USAGE_FALLBACK_HEADING);
+  await expect(page.locator(SLOT('usage') + ' ' + TREND_CARD)).toHaveCount(1);
+  await expect(page.locator(SLOT('usage') + ' ' + PROBLEMS_CARD)).toHaveCount(1);
+  await expect(page.locator(HERO)).toHaveCount(0);
+  h.open('dossier', 'signals');
+  await expect(page.locator(HERO)).toHaveCount(1);
+  await expect(page.locator(SLOT('usage') + ' ' + TREND_CARD)).toHaveCount(1);
+  expect(pageErrors).toEqual([]);
+});
+
+
+// ---- Device Records pagination (O7 phase C): 50 rows per page, per table ----
+
+const PAGE_SIZE = 50;
+const PAGER = 'nav[aria-label="Device records pages"]';
+const WEAK_PAGER = WEAK_SECTION + ' nav[aria-label="Weak matches pages"]';
+const PAGER_INFO = '.pager-info';
+const MAIN_UDIS = MAIN_ROWS + ' td.udi-cell';
+const stripUdi = (ss: string[]) => ss.map((s) => s.replace(/\s*↗$/, ''));
+const pageInfo = (from: number, to: number, of: number, pages: number, page: number) =>
+  'Page ' + page + ' of ' + pages + ' · rows ' + from + '–' + to + ' of ' + of;
+
+test('Q1 the strong table shows 50 rows per page: Next shows rows 51-100, Previous goes back', async ({ page, pageErrors }) => {
+  const strong = strongRecords(fixture('devices'));
+  const pages = Math.ceil(strong.length / PAGE_SIZE);
+  await search(page);
+  await expect(page.locator(MAIN_ROWS)).toHaveCount(PAGE_SIZE);
+  expect(stripUdi(await page.locator(MAIN_UDIS).allTextContents())).toEqual(strong.slice(0, 50).map((r: any) => r.udi));
+  await expect(page.locator(PAGER + ' ' + PAGER_INFO)).toHaveText(pageInfo(1, 50, strong.length, pages, 1));
+  await page.locator(PAGER).getByRole('button', { name: 'Next' }).click();
+  await expect(page.locator(MAIN_ROWS)).toHaveCount(PAGE_SIZE);
+  expect(stripUdi(await page.locator(MAIN_UDIS).allTextContents())).toEqual(strong.slice(50, 100).map((r: any) => r.udi));
+  await expect(page.locator(PAGER + ' ' + PAGER_INFO)).toHaveText(pageInfo(51, 100, strong.length, pages, 2));
+  await page.locator(PAGER).getByRole('button', { name: 'Previous' }).click();
+  expect(stripUdi(await page.locator(MAIN_UDIS).allTextContents())).toEqual(strong.slice(0, 50).map((r: any) => r.udi));
+  expect(pageErrors).toEqual([]);
+});
+
+test('Q2 a filter with fewer than 51 rows has no pager; clearing it brings the pager back on page 1', async ({ page, pageErrors }) => {
+  const strong = strongRecords(fixture('devices'));
+  const pages = Math.ceil(strong.length / PAGE_SIZE);
+  await search(page);
+  const next = page.locator(PAGER).getByRole('button', { name: 'Next' });
+  for (let i = 0; i < 4; i++) await next.click(); // page 5
+  await expect(page.locator(PAGER + ' ' + PAGER_INFO)).toContainText('Page 5 of ' + pages);
+  await page.locator('.qfilter').fill(strong[3].udi);
+  await expect(page.locator(MAIN_ROWS)).toHaveCount(1);
+  await expect(page.locator(PAGER)).toBeHidden();
+  await page.locator('.qfilter').fill('');
+  await expect(page.locator(PAGER)).toBeVisible();
+  await expect(page.locator(PAGER + ' ' + PAGER_INFO)).toHaveText(pageInfo(1, 50, strong.length, pages, 1));
+  // A filter that still needs several pages also starts on page 1, not on the old page.
+  for (let i = 0; i < 4; i++) await next.click();
+  await page.locator('.qfilter').fill('class iii');
+  const n = strong.filter((r: any) => r.device_class === 'Class III').length;
+  await expect(page.locator('.qcount')).toHaveText(' · ' + n + ' / ' + strong.length + ' rows');
+  await expect(page.locator(PAGER + ' ' + PAGER_INFO)).toHaveText(pageInfo(1, 50, n, Math.ceil(n / 50), 1));
+  expect(pageErrors).toEqual([]);
+});
+
+test('Q3 a chip and a sort return to page 1; the sort covers all rows, not just the visible page', async ({ page, pageErrors }) => {
+  const strong = strongRecords(fixture('devices'));
+  const pages = Math.ceil(strong.length / PAGE_SIZE);
+  await search(page);
+  await page.locator(PAGER).getByRole('button', { name: 'Next' }).click(); // page 2
+  await page.locator(MAIN_CHIPS).nth(1).click();
+  const want = Number(await page.locator(MAIN_CHIPS).nth(1).locator('.cnt').textContent());
+  await expect(page.locator(MAIN_ROWS)).toHaveCount(want);
+  await expect(page.locator(PAGER)).toBeHidden();
+  await page.locator(MAIN_CHIPS).nth(0).click(); // All
+  await expect(page.locator(PAGER + ' ' + PAGER_INFO)).toHaveText(pageInfo(1, 50, strong.length, pages, 1));
+  await page.locator(PAGER).getByRole('button', { name: 'Next' }).click(); // page 2 again
+  // Sort by Device Name ascending: page 1 starts with the first name of ALL rows.
+  await page.locator('.dev-card > .dev-table-wrap th[data-col="Device Name"]').click();
+  const names = strong.map((r: any) => String(r.device_name).trim()).filter((v: string) => v !== '');
+  names.sort((a: string, b: string) => a.localeCompare(b));
+  const pageOneMin = strong.slice(0, 50).map((r: any) => String(r.device_name).trim()).filter((v: string) => v !== '')
+    .sort((a: string, b: string) => a.localeCompare(b))[0];
+  expect(names[0]).not.toBe(pageOneMin); // the check can tell "all rows" from "one page"
+  await expect(page.locator(PAGER + ' ' + PAGER_INFO)).toHaveText(pageInfo(1, 50, strong.length, pages, 1));
+  await expect(page.locator(MAIN_ROWS).first().locator('td').nth(1)).toHaveText(names[0]);
+  expect(pageErrors).toEqual([]);
+});
+
+test('Q4 CSV after moving to page 3 holds every filtered row, not the 50 on screen', async ({ page, pageErrors }) => {
+  const strong = strongRecords(fixture('devices'));
+  await search(page);
+  await page.locator('.qfilter').fill('class iii');
+  const next = page.locator(PAGER).getByRole('button', { name: 'Next' });
+  await next.click();
+  await next.click(); // page 3
+  const n = strong.filter((r: any) => r.device_class === 'Class III').length;
+  await expect(page.locator('.qcount')).toHaveText(' · ' + n + ' / ' + strong.length + ' rows');
+  await expect(page.locator(PAGER + ' ' + PAGER_INFO)).toContainText('Page 3 of ' + Math.ceil(n / 50));
+  const weakLabel = await page.locator(WEAK_SECTION + ' summary').textContent();
+  const wm = /Weak matches \((?:(\d+) \/ )?(\d+)\)/.exec(weakLabel || '')!;
+  const weakShown = Number(wm[1] ?? wm[2]);
+  const download = page.waitForEvent('download');
+  await page.locator('.dev-card button', { hasText: 'CSV' }).click();
+  const file = await (await download).path();
+  const lines = parseCSV(fs.readFileSync(file!, 'utf8').replace(/^﻿/, ''));
+  const body = lines.slice(3).filter((r) => r.length > 1);
+  expect(body).toHaveLength(n + weakShown);
+  expect(n).toBeGreaterThan(PAGE_SIZE * 2);
+  expect(pageErrors).toEqual([]);
+});
+
+test('Q5 the weak-matches table paginates on its own', async ({ page, pageErrors }) => {
+  const devices = fixture('devices');
+  const weak = weakRecords(devices);
+  const strong = strongRecords(devices);
+  expect(weak.length).toBeGreaterThan(PAGE_SIZE); // the recorded fixture has 68 weak rows
+  await search(page);
+  await page.locator(WEAK_SECTION + ' summary').click();
+  const weakRows = WEAK_SECTION + ' tbody tr';
+  await expect(page.locator(weakRows)).toHaveCount(PAGE_SIZE);
+  await expect(page.locator(WEAK_PAGER + ' ' + PAGER_INFO)).toHaveText(pageInfo(1, 50, weak.length, 2, 1));
+  await page.locator(WEAK_PAGER).getByRole('button', { name: 'Next' }).click();
+  await expect(page.locator(weakRows)).toHaveCount(weak.length - PAGE_SIZE);
+  await expect(page.locator(WEAK_PAGER + ' ' + PAGER_INFO)).toHaveText(pageInfo(51, weak.length, weak.length, 2, 2));
+  // The main table did not move.
+  await expect(page.locator(PAGER + ' ' + PAGER_INFO)).toHaveText(pageInfo(1, 50, strong.length, Math.ceil(strong.length / 50), 1));
+  expect(stripUdi(await page.locator(MAIN_UDIS).allTextContents())).toEqual(strong.slice(0, 50).map((r: any) => r.udi));
+  expect(pageErrors).toEqual([]);
+});
+
+test('Q6 the table header stays pinned (opaque, aligned) while the rows scroll under it', async ({ page, pageErrors }) => {
+  await search(page);
+  const wrap = page.locator('.dev-card > .dev-table-wrap');
+  await wrap.scrollIntoViewIfNeeded();
+  await wrap.evaluate((el) => { el.scrollTop = 900; });
+  const m = await page.evaluate(() => {
+    const w = document.querySelector('.dev-card > .dev-table-wrap')!;
+    const th = w.querySelector('thead th')!;
+    const wr = w.getBoundingClientRect(), tr = th.getBoundingClientRect();
+    return {
+      scrolled: w.scrollTop, headTop: tr.top, wrapTop: wr.top, vh: window.innerHeight,
+      bg: getComputedStyle(th).backgroundColor, z: getComputedStyle(th).zIndex, pos: getComputedStyle(th).position,
+    };
+  });
+  expect(m.scrolled).toBeGreaterThan(300); // the body really is scrolled under the header
+  expect(Math.abs(m.headTop - m.wrapTop)).toBeLessThanOrEqual(2);
+  expect(m.headTop).toBeGreaterThanOrEqual(0);
+  expect(m.headTop).toBeLessThan(m.vh);
+  expect(m.pos).toBe('sticky');
+  expect(m.bg).not.toMatch(/rgba\(.*,\s*0(\.\d+)?\)$/); // not transparent: rows must not show through
+  expect(m.bg).not.toBe('rgba(0, 0, 0, 0)');
+  expect(pageErrors).toEqual([]);
+});
+
+test('Q7 the Device Records slot keeps its height within the tolerance when it fills', async ({ page, pageErrors }) => {
+  const h = held(API_ENDPOINTS);
+  await scripted(page, h.handlers);
+  await startSearch(page);
+  await expect(page.locator(SLOT('devices'))).toHaveAttribute('aria-busy', 'true');
+  const height = () => page.locator(SLOT('devices')).evaluate((el) => el.getBoundingClientRect().height);
+  const pending = await height();
+  h.open(...API_ENDPOINTS);
+  await expect(page.locator('#search-btn')).toBeEnabled();
+  await page.waitForTimeout(700);
+  const filled = await height();
+  expect(Math.abs(filled - pending), 'pending ' + Math.round(pending) + ' filled ' + Math.round(filled)).toBeLessThanOrEqual(60);
+  expect(pageErrors).toEqual([]);
+});
+
+test('Q8 the pagers are labelled navigation landmarks with disabled end buttons and a polite live text', async ({ page, pageErrors }) => {
+  const strong = strongRecords(fixture('devices'));
+  const pages = Math.ceil(strong.length / PAGE_SIZE);
+  await search(page);
+  await page.locator(WEAK_SECTION + ' summary').click();
+  const nav = page.getByRole('navigation', { name: 'Device records pages' });
+  await expect(nav).toHaveCount(1);
+  await expect(page.getByRole('navigation', { name: 'Weak matches pages' })).toHaveCount(1);
+  const prev = nav.getByRole('button', { name: 'Previous' });
+  const next = nav.getByRole('button', { name: 'Next' });
+  await expect(prev).toBeDisabled();
+  await expect(next).toBeEnabled();
+  const live = nav.locator(PAGER_INFO);
+  await expect(live).toHaveAttribute('aria-live', 'polite');
+  await expect(live).toHaveText(pageInfo(1, 50, strong.length, pages, 1));
+  await next.click();
+  await expect(live).toHaveText(pageInfo(51, 100, strong.length, pages, 2));
+  expect(await page.evaluate(() => (document.activeElement as HTMLElement).textContent)).toBe('Next'); // focus stays on the pressed button
+  await expect(prev).toBeEnabled();
+  for (let i = 2; i < pages; i++) await next.click();
+  await expect(live).toHaveText(pageInfo((pages - 1) * 50 + 1, strong.length, strong.length, pages, pages));
+  await expect(next).toBeDisabled();
+  await expect(prev).toBeEnabled();
   expect(pageErrors).toEqual([]);
 });
