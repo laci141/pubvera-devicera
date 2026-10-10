@@ -1213,6 +1213,30 @@ func handleDevices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	key := strings.ToLower(strings.TrimSpace(device))
+	res, err := sharedDevices.Do(r.Context(), key, func(ctx context.Context) devicesResult {
+		return computeDevices(ctx, r.URL.Path, device, src)
+	})
+	if err != nil {
+		return // the caller went away; nothing to write to
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.WriteHeader(res.status)
+	_, _ = w.Write(res.body)
+}
+
+// encodeDevicesBody encodes v exactly as writeJSON does (trailing newline).
+func encodeDevicesBody(v any) []byte {
+	var buf bytes.Buffer
+	_ = json.NewEncoder(&buf).Encode(v)
+	return buf.Bytes()
+}
+
+// computeDevices runs both UDI legs and builds the response. A both-legs
+// failure is a 502 with ttl 0 (never cached); a complete answer gets
+// devicesCacheTTL, a rate_limited or partial one devicesShortTTL.
+func computeDevices(ctx context.Context, path, device string, src sources.Source) devicesResult {
 	var (
 		brandRecs  []sources.RawRecord
 		brandTotal int
@@ -1227,7 +1251,7 @@ func handleDevices(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer wg.Done()
 		var page sources.Page
-		brandRecs, page, brandErr = src.Fetch(r.Context(), sources.Query{Term: device, Limit: 100})
+		brandRecs, page, brandErr = src.Fetch(ctx, sources.Query{Term: device, Limit: 100})
 		brandTotal = page.Total
 	}()
 	go func() {
@@ -1235,15 +1259,22 @@ func handleDevices(w http.ResponseWriter, r *http.Request) {
 		// Up to udiCategoryCap records in pages of 1000: one page missed real
 		// devices ("pacemaker": 2,380 matches, 158 strong device groups, ACCOLADE
 		// MRI DR among them, sat past the first 1,000).
-		catRecs, catTotal, catPageLim, catErr = udiCategorySearch(r.Context(), device)
+		catRecs, catTotal, catPageLim, catErr = udiCategorySearch(ctx, device)
 	}()
 	wg.Wait()
 	if brandErr != nil && catErr != nil {
 		// The raw errors carry the upstream URL: log them, send a class only.
-		reqLog.Error("upstream", "path", r.URL.Path, "leg", "brand", "err", brandErr.Error())
-		reqLog.Error("upstream", "path", r.URL.Path, "leg", "category", "err", catErr.Error())
-		writeUpstreamFailure(w, cliutil.IsRateLimited(brandErr) || cliutil.IsRateLimited(catErr))
-		return
+		reqLog.Error("upstream", "path", path, "leg", "brand", "err", brandErr.Error())
+		reqLog.Error("upstream", "path", path, "leg", "category", "err", catErr.Error())
+		code := cliutil.CodeUnavail
+		if cliutil.IsRateLimited(brandErr) || cliutil.IsRateLimited(catErr) {
+			code = cliutil.CodeRateLimited
+		}
+		return devicesResult{status: http.StatusBadGateway, body: encodeDevicesBody(map[string]any{
+			"error":      "upstream data source failed",
+			"code":       code,
+			"disclaimer": cliutil.Disclaimer,
+		})}
 	}
 
 	brandRows := make([]map[string]any, 0, len(brandRecs))
@@ -1272,13 +1303,13 @@ func handleDevices(w http.ResponseWriter, r *http.Request) {
 	var partial []string
 	rateLimited := catPageLim
 	if brandErr != nil {
-		reqLog.Error("upstream", "path", r.URL.Path, "leg", "brand", "err", brandErr.Error())
+		reqLog.Error("upstream", "path", path, "leg", "brand", "err", brandErr.Error())
 		msg, _ := cliutil.UpstreamClass(brandErr)
 		partial = append(partial, "brand-name search unavailable: "+msg)
 		rateLimited = rateLimited || cliutil.IsRateLimited(brandErr)
 	}
 	if catErr != nil {
-		reqLog.Error("upstream", "path", r.URL.Path, "leg", "category", "err", catErr.Error())
+		reqLog.Error("upstream", "path", path, "leg", "category", "err", catErr.Error())
 		msg, _ := cliutil.UpstreamClass(catErr)
 		partial = append(partial, "product-category search unavailable: "+msg)
 		rateLimited = rateLimited || cliutil.IsRateLimited(catErr)
@@ -1289,7 +1320,11 @@ func handleDevices(w http.ResponseWriter, r *http.Request) {
 	if rateLimited {
 		resp["rate_limited"] = true
 	}
-	writeJSON(w, http.StatusOK, resp)
+	ttl := devicesCacheTTL
+	if rateLimited || partial != nil {
+		ttl = devicesShortTTL
+	}
+	return devicesResult{status: http.StatusOK, body: encodeDevicesBody(resp), ttl: ttl}
 }
 
 // firstLine trims a multi-line stderr capture to its first line for the JSON

@@ -761,6 +761,7 @@ func devicesResponseFake(t *testing.T, query string, brand, category []map[strin
 	udiClient = cliutil.NewClient(upstream.URL)
 	t.Cleanup(func() { udiClient = old })
 
+	resetDevicesCache(t)
 	rec := httptest.NewRecorder()
 	handleDevices(rec, httptest.NewRequest(http.MethodGet, "/api/devices?device="+url.QueryEscape(query), nil))
 	if rec.Code != http.StatusOK {

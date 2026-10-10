@@ -78,6 +78,7 @@ func TestAuditBUG06PanicDetailNotLeaked(t *testing.T) {
 // swapLUCache resets the freshness cache and fetch func, restoring both after.
 func swapLUCache(t *testing.T, fetch func(context.Context) string) {
 	t.Helper()
+	resetDevicesCache(t)
 	origFetch := fetchOpenFDALastUpdated
 	luCache.mu.Lock()
 	origVal, origAt := luCache.val, luCache.at

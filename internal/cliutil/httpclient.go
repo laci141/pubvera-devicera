@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -92,6 +93,32 @@ const maxAttempts = 3
 // multi-minute value would cost more than the signal is worth, so past this we
 // give up and report the error rather than stall the run.
 const maxRetryAfter = 5 * time.Second
+
+// UpstreamLogger returns the logger for the per-attempt "upstream" lines. The
+// serve command points it at the request logger; the default is slog's.
+var UpstreamLogger = slog.Default
+
+// logAttempt writes one INFO line per upstream attempt. Only host, path (never
+// the query string, so never api_key) and numbers are logged; no header and no
+// full URL ever reach the log.
+func (c *Client) logAttempt(path string, attempt, status int, start time.Time, bytes int, retryAfter string) {
+	host := ""
+	if pu, err := url.Parse(c.BaseURL); err == nil {
+		host = pu.Host
+	}
+	ra := 0
+	if v, err := strconv.Atoi(strings.TrimSpace(retryAfter)); err == nil && v > 0 {
+		ra = v
+	}
+	UpstreamLogger().Info("upstream",
+		"host", host,
+		"path", path,
+		"attempt", attempt+1,
+		"status", status,
+		"duration_ms", time.Since(start).Milliseconds(),
+		"bytes", bytes,
+		"retry_after", ra)
+}
 
 // NewClient returns a Client with sane keyless defaults.
 func NewClient(baseURL string) *Client {
@@ -188,8 +215,10 @@ func (c *Client) GetJSON(ctx context.Context, path string, params url.Values) ([
 		req.Header.Set("User-Agent", c.UserAgent)
 		req.Header.Set("Accept", "application/json")
 
+		start := time.Now()
 		resp, err := c.HTTP.Do(req)
 		if err != nil {
+			c.logAttempt(path, attempt, 0, start, 0, "")
 			lastErr = err
 			delay, _ = c.retryDelay(nil, attempt)
 			continue // transport error — allow a retry
@@ -202,6 +231,7 @@ func (c *Client) GetJSON(ctx context.Context, path string, params url.Values) ([
 		// swallow) a body that exceeds it.
 		body, err := io.ReadAll(io.LimitReader(resp.Body, max+1))
 		resp.Body.Close()
+		c.logAttempt(path, attempt, resp.StatusCode, start, len(body), resp.Header.Get("Retry-After"))
 		if err != nil {
 			return nil, resp.StatusCode, fmt.Errorf("read response body from %s: %w", u, err)
 		}
