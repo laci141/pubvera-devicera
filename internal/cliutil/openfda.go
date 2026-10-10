@@ -1,6 +1,7 @@
 package cliutil
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 	"os"
@@ -28,12 +29,36 @@ func SetOpenFDAKey(key string) (restore func()) {
 }
 
 // NewOpenFDAClient is NewClient for api.fda.gov: keyless unless
-// OPENFDA_API_KEY is set, in which case every request carries api_key.
+// OPENFDA_API_KEY is set, in which case every request to the base URL's own
+// scheme and host carries api_key. Requests to any other host go out without it,
+// and a redirect to another host is refused.
 func NewOpenFDAClient(baseURL string) *Client {
 	c := NewClient(baseURL)
 	c.UserAgent = "medical-device-intelligence-pp-cli/0.1 (keyless unless OPENFDA_API_KEY is set)"
-	c.HTTP.Transport = apiKeyTransport{}
+	// An unparsable base leaves scheme and host empty, which matches nothing:
+	// the key is then never attached.
+	var scheme, host string
+	if u, err := url.Parse(c.BaseURL); err == nil {
+		scheme, host = u.Scheme, u.Host
+	}
+	c.HTTP.Transport = apiKeyTransport{scheme: scheme, host: host}
+	c.HTTP.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		if !sameOrigin(req.URL, scheme, host) {
+			return errors.New("openfda: redirect to a different host refused")
+		}
+		return nil
+	}
 	return c
+}
+
+// sameOrigin reports whether u has exactly the given scheme and host (host
+// includes the port). Empty scheme or host never matches.
+func sameOrigin(u *url.URL, scheme, host string) bool {
+	return scheme != "" && host != "" &&
+		strings.EqualFold(u.Scheme, scheme) && strings.EqualFold(u.Host, host)
 }
 
 // apiKeyTransport adds api_key to a CLONE of each request, never to the
@@ -42,13 +67,17 @@ func NewOpenFDAClient(baseURL string) *Client {
 // error, the *url.Error a failed Do returns — comes from the original request,
 // which never carries the key. The key exists only on the wire.
 //
+// The key is attached only when the request's scheme and host equal the
+// client base URL's (scheme, host); anything else passes through keyless, so a
+// redirect cannot carry the key to another host.
+//
 // The base is looked up per request rather than captured, so a test that
 // swaps http.DefaultTransport still sees these requests.
-type apiKeyTransport struct{}
+type apiKeyTransport struct{ scheme, host string }
 
-func (apiKeyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+func (t apiKeyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	key, _ := openFDAKey.Load().(string)
-	if key == "" {
+	if key == "" || !sameOrigin(req.URL, t.scheme, t.host) {
 		return http.DefaultTransport.RoundTrip(req)
 	}
 	keyed := req.Clone(req.Context())
