@@ -2696,6 +2696,9 @@
       if (v === null || v === undefined || v === false) return '';
       if (v === true) return "Yes";
       var s = (typeof v === 'object') ? JSON.stringify(v) : String(v);
+      // CSV formula injection: a text cell a spreadsheet could read as a formula
+      // gets a leading apostrophe. Real numbers and strictly numeric strings stay.
+      if (typeof v !== 'number' && !/^-?\d+(\.\d+)?$/.test(s) && /^[ \t\r\n]*[=+\-@]|^[\t\r]/.test(s)) s = "'" + s;
       if (/[",\r\n]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
       return s;
     };
