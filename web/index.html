@@ -1560,6 +1560,7 @@
   // Example chips fill the search box and run the search.
   Array.prototype.forEach.call(document.querySelectorAll('.chip-btn'), function (btn) {
     btn.addEventListener('click', function () {
+      if (searchState.busy) return;
       input.value = btn.getAttribute('data-example') || '';
       doSearch();
     });
@@ -1590,6 +1591,7 @@
   var slots = {};
 
   function doSearch() {
+    if (!tryBeginSearch(searchState)) return;
     var device = input.value.trim();
     searchId++;
     var id = searchId;
@@ -1720,7 +1722,7 @@
       renderFreshness((d.ok && d.data.meta) || (s && s.ok && s.data.meta) || null);
     }, true);
     fillSlot('overview', 'Device overview', function () {
-      if (!d.ok) out.appendChild(sectionUnavailable('Device overview'));
+      if (!d.ok) out.appendChild(sectionUnavailable('Device overview', '', d));
       else renderBentoTop(d.data, s && s.ok ? s.data : null);
     }, d.ok);
     fillSlot('signals', 'Signal readings', function () {
@@ -1827,7 +1829,22 @@
   }
 
   // Title plus a short note, in place of a section whose request failed.
-  function sectionUnavailable(title, extraClass) {
+  // A 429 comes from the edge rate limit in front of /api/* (HTML body, no
+  // JSON), so only the status and Retry-After say what happened. Retry-After
+  // counts when it is a whole number of seconds; an HTTP date is ignored.
+  function retryAfterSeconds(resp) {
+    var v = resp && resp.retryAfter;
+    if (v === null || v === undefined || !/^\s*\d+\s*$/.test(String(v))) return 0;
+    return parseInt(v, 10);
+  }
+  function unavailableText(resp) {
+    if (!resp || resp.status !== 429) return 'This section is temporarily unavailable.';
+    var n = retryAfterSeconds(resp);
+    return 'Too many requests — please wait ' +
+      (n > 0 ? n + (n === 1 ? ' second' : ' seconds') : 'a few seconds') + ' and try again.';
+  }
+
+  function sectionUnavailable(title, extraClass, resp) {
     var card = document.createElement('div');
     card.className = 'glass section-unavailable' + (extraClass ? ' ' + extraClass : '');
     var status = document.createElement('div');
@@ -1835,12 +1852,25 @@
     status.textContent = title;
     card.appendChild(status);
     var p = document.createElement('p');
-    p.textContent = 'This section is temporarily unavailable.';
+    p.textContent = unavailableText(resp);
     card.appendChild(p);
     return card;
   }
 
+  // In-flight guard: one search at a time. doSearch takes the flag, setLoading(false)
+  // gives it back when the five requests have settled (or the page went full-page).
+  var searchState = { busy: false };
+  function tryBeginSearch(st) {
+    if (st.busy) return false;
+    st.busy = true;
+    return true;
+  }
+  function endSearch(st) {
+    st.busy = false;
+  }
+
   function setLoading(isLoading) {
+    if (!isLoading) endSearch(searchState);
     searchBtn.disabled = isLoading;
   }
 
@@ -1997,7 +2027,8 @@
       return resp.json().catch(function () {
         return {};
       }).then(function (data) {
-        return { ok: resp.ok, status: resp.status, data: data };
+        var ra = resp.headers && resp.headers.get ? resp.headers.get('Retry-After') : null;
+        return { ok: resp.ok, status: resp.status, data: data, retryAfter: ra };
       });
     });
   }
@@ -2531,7 +2562,7 @@
   // ---- Yearly Trend card (from /api/trend) ----
   function trendCard() {
     if (!trendResp) return null;
-    if (!trendResp.ok) return sectionUnavailable('Yearly Trend', 'signal-card span2');
+    if (!trendResp.ok) return sectionUnavailable('Yearly Trend', 'signal-card span2', trendResp);
     var rows = trendResp.data.records || [];
     if (!rows.length) return null;
 
@@ -2583,7 +2614,7 @@
   // ---- Top Reported Problems card (from /api/failure-modes) ----
   function problemsCard() {
     if (!problemsResp) return null;
-    if (!problemsResp.ok) return sectionUnavailable('Top Reported Problems', 'signal-card span2');
+    if (!problemsResp.ok) return sectionUnavailable('Top Reported Problems', 'signal-card span2', problemsResp);
     var rows = problemsResp.data.records || [];
     if (!rows.length) return null;
 
@@ -3053,7 +3084,7 @@
   function renderDevicesSection() {
     if (!devicesResp) return;
     if (!devicesResp.ok) {
-      out.appendChild(sectionUnavailable('Device Records'));
+      out.appendChild(sectionUnavailable('Device Records', '', devicesResp));
       return;
     }
     var recs = devicesResp.data.records || [];
