@@ -1560,7 +1560,6 @@
   // Example chips fill the search box and run the search.
   Array.prototype.forEach.call(document.querySelectorAll('.chip-btn'), function (btn) {
     btn.addEventListener('click', function () {
-      if (searchState.busy) return;
       input.value = btn.getAttribute('data-example') || '';
       doSearch();
     });
@@ -1592,9 +1591,8 @@
 
   function doSearch() {
     var device = input.value.trim();
-    var id = searchId + 1;
-    if (!tryBeginSearch(searchState, device, id)) return;
-    searchId = id;
+    searchId++;
+    var id = searchId;
     clearChildren(results);
     setRateLimitBanner(false);
     announce('');
@@ -1603,7 +1601,7 @@
     lastData.udi = lastData.trend = lastData.problems = lastData.signals = null;
     deviceView = null;
     if (!device) {
-      setLoading(false, id);
+      setLoading(false);
       emptyMsg.classList.remove('hidden');
       return;
     }
@@ -1659,7 +1657,7 @@
       showFullPage(renderNetworkError);
       return;
     }
-    setLoading(false, run.id);
+    setLoading(false);
     removeLoadingNote();
     announce('All sections loaded');
   }
@@ -1674,7 +1672,7 @@
     trendResp = problemsResp = devicesResp = null;
     lastData.udi = lastData.trend = lastData.problems = lastData.signals = null;
     deviceView = null;
-    setLoading(false, run.id);
+    setLoading(false);
     draw();
   }
 
@@ -1857,25 +1855,7 @@
     return card;
   }
 
-  // In-flight guard: the SAME term is ignored while a search runs (duplicate click);
-  // a DIFFERENT term starts at once and the older response is dropped by searchId.
-  // setLoading(false) gives the flag back when the five requests have settled (or
-  // the page went full-page) — but only for the search that still owns it.
-  var searchState = { busy: false, term: '', id: 0 };
-  function tryBeginSearch(st, term, id) {
-    if (st.busy && term === st.term) return false;
-    st.busy = true;
-    st.term = term;
-    st.id = id;
-    return true;
-  }
-  function endSearch(st, id) {
-    if (id !== undefined && id !== st.id) return;
-    st.busy = false;
-  }
-
-  function setLoading(isLoading, id) {
-    if (!isLoading) endSearch(searchState, id);
+  function setLoading(isLoading) {
     searchBtn.disabled = isLoading;
   }
 

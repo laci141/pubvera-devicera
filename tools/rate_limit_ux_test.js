@@ -1,6 +1,6 @@
 'use strict';
 // Loads the REAL functions out of web/index.html (no copies) and checks the
-// 429 message and the in-flight search guard. Plain node, no dependencies.
+// 429 message and that the in-flight search guard stays removed. Plain node, no dependencies.
 const fs = require('fs');
 const path = require('path');
 
@@ -23,8 +23,6 @@ function check(name, ok, detail) {
 
 const unavailSrc = extract('unavailableText');
 const retrySrc = extract('retryAfterSeconds');
-const beginSrc = extract('tryBeginSearch');
-const endSrc = extract('endSearch');
 const fetchSrc = extract('fetchJson');
 
 // unavailableText(resp) -> string; undefined when the function does not exist yet.
@@ -76,37 +74,11 @@ function runFetchJson(status, headers) {
   check('c) Retry-After on a 500 does not change the generic message',
     !!r500 && unavailableText(r500) === GENERIC, 'got ' + JSON.stringify(r500 && unavailableText(r500)));
 
-  // d) / e) in-flight guard (pure state object, no DOM)
-  if (!beginSrc || !endSrc) {
-    check('d) guard functions exist (tryBeginSearch/endSearch)', false, 'not found in web/index.html');
-    check('e) guard functions exist (tryBeginSearch/endSearch)', false, 'not found in web/index.html');
-  } else {
-    const g = new Function(beginSrc + '\n' + endSrc + '\nreturn {tryBeginSearch: tryBeginSearch, endSearch: endSearch};')();
-    const st = { busy: false };
-    let sent = 0;
-    let nextId = 0;
-    function search(term) { if (g.tryBeginSearch(st, term.trim(), nextId + 1)) { nextId++; sent += 5; return true; } return false; }
-
-    check('d) first search starts', search('pacemaker') === true);
-    const before = sent;
-    const second = search('pacemaker');
-    check('d) same term while in flight sends no new requests', second === false && sent === before,
-      'second=' + second + ' sent ' + before + ' -> ' + sent);
-    check('d) different term while in flight starts', search('stent') === true && sent === before + 5);
-
-    // search 1 (pacemaker) is older; search 2 (stent) is current and still in flight
-    g.endSearch(st, 1); // the older search settles late
-    check('d) an older search settling late does not release the newer guard',
-      search('stent') === false && sent === before + 5);
-
-    g.endSearch(st, nextId); // current search settled (success or failure)
-    check('e) same term works again after settle', search('pacemaker') === true && sent === before + 10);
-    g.endSearch(st, nextId);
-    check('e) different term works after settle', search('stent') === true && sent === before + 15);
-    g.endSearch(st, nextId);
-    g.endSearch(st, nextId); // settling twice must not break anything
-    check('e) double settle is harmless', search('x') === true);
-  }
+  // f) the in-flight search guard is gone (a same-term re-search must start)
+  ['tryBeginSearch', 'endSearch', 'searchState'].forEach(function (word) {
+    check('f) web/index.html does not contain ' + word, html.indexOf(word) < 0,
+      'found ' + word + ' at offset ' + html.indexOf(word));
+  });
 
   process.exit(failed ? 1 : 0);
 })();
