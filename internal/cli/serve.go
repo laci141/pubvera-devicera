@@ -98,6 +98,7 @@ func cmdServe(ctx context.Context, stdout, stderr io.Writer, args []string) int 
 	go func() { errCh <- srv.ListenAndServe() }()
 	fmt.Fprintf(stderr, "serve: listening on :%d (Ctrl+C to stop)\n", p)
 	startBaselinePrewarm(ctx, stderr)
+	startDevicesPrewarm(ctx, stderr)
 
 	select {
 	case <-ctx.Done():
@@ -141,6 +142,79 @@ func startBaselinePrewarm(ctx context.Context, stderr io.Writer) {
 				reason = "upstream rate limit reached"
 			}
 			fmt.Fprintf(stderr, "serve: baseline prewarm failed: %s\n", reason)
+		}
+	}()
+}
+
+// Devices prewarm: DEVICERA_PREWARM_DEVICES is a comma separated list; the
+// default covers the common searches. The vars are indirections for tests.
+const defaultPrewarmDevices = "pacemaker,stent,defibrillator,catheter,insulin pump"
+
+var (
+	prewarmDeviceGap    = 2 * time.Second
+	prewarmDevicesEvery = 12 * time.Hour // keeps entries inside the 24 h stale window
+	prewarmDevice       = warmDevice
+)
+
+func prewarmDeviceList(env func(string) string) []string {
+	raw := env("DEVICERA_PREWARM_DEVICES")
+	if strings.TrimSpace(raw) == "" {
+		raw = defaultPrewarmDevices
+	}
+	var out []string
+	for _, d := range strings.Split(raw, ",") {
+		if d = strings.TrimSpace(d); d != "" {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// warmDevice fills the devices cache for one device and returns the HTTP status
+// (0 when the source is missing or ctx ended).
+func warmDevice(ctx context.Context, device string) int {
+	src, ok := getSource("openfda_device_udi")
+	if !ok {
+		return 0
+	}
+	res, _, err := fetchDevices(ctx, "/api/devices", device, src)
+	if err != nil {
+		return 0
+	}
+	return res.status
+}
+
+// startDevicesPrewarm warms the devices cache in ONE background goroutine,
+// sequentially with prewarmDeviceGap between devices, and repeats every
+// prewarmDevicesEvery until ctx ends. A failure only logs.
+func startDevicesPrewarm(ctx context.Context, _ io.Writer) {
+	if !prewarmEnabled {
+		return
+	}
+	devices := prewarmDeviceList(getenv)
+	gap, every, warm := prewarmDeviceGap, prewarmDevicesEvery, prewarmDevice
+	go func() {
+		for {
+			for i, d := range devices {
+				if i > 0 {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(gap):
+					}
+				}
+				if ctx.Err() != nil {
+					return
+				}
+				start := time.Now()
+				status := warm(ctx, d)
+				reqLog.Info("devices prewarm", "device", d, "duration_ms", time.Since(start).Milliseconds(), "status", status)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(every):
+			}
 		}
 	}()
 }
@@ -208,7 +282,7 @@ func NewServeHandler() http.Handler {
 		}
 		writeJSONError(w, http.StatusNotFound, "not found")
 	})
-	return withLogging(withRecovery(mux))
+	return withLogging(withRecovery(withGzip(mux)))
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -1213,17 +1287,23 @@ func handleDevices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key := strings.ToLower(strings.TrimSpace(device))
-	res, err := sharedDevices.Do(r.Context(), key, func(ctx context.Context) devicesResult {
-		return computeDevices(ctx, r.URL.Path, device, src)
-	})
+	res, state, err := fetchDevices(r.Context(), r.URL.Path, device, src)
 	if err != nil {
 		return // the caller went away; nothing to write to
 	}
+	w.Header().Set("X-Cache", state)
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(res.status)
 	_, _ = w.Write(res.body)
+}
+
+// fetchDevices is the cached path shared by the handler and the prewarm.
+func fetchDevices(ctx context.Context, path, device string, src sources.Source) (devicesResult, string, error) {
+	key := strings.ToLower(strings.TrimSpace(device))
+	return sharedDevices.Do(ctx, key, func(ctx context.Context) devicesResult {
+		return computeDevices(ctx, path, device, src)
+	})
 }
 
 // encodeDevicesBody encodes v exactly as writeJSON does (trailing newline).
@@ -1235,7 +1315,8 @@ func encodeDevicesBody(v any) []byte {
 
 // computeDevices runs both UDI legs and builds the response. A both-legs
 // failure is a 502 with ttl 0 (never cached); a complete answer gets
-// devicesCacheTTL, a rate_limited or partial one devicesShortTTL.
+// devicesCacheTTL (stale-servable up to devicesStaleTTL), a rate_limited or
+// partial one devicesShortTTL (never stale).
 func computeDevices(ctx context.Context, path, device string, src sources.Source) devicesResult {
 	var (
 		brandRecs  []sources.RawRecord
@@ -1320,11 +1401,11 @@ func computeDevices(ctx context.Context, path, device string, src sources.Source
 	if rateLimited {
 		resp["rate_limited"] = true
 	}
-	ttl := devicesCacheTTL
+	ttl, stale := devicesCacheTTL, devicesStaleTTL
 	if rateLimited || partial != nil {
-		ttl = devicesShortTTL
+		ttl, stale = devicesShortTTL, 0
 	}
-	return devicesResult{status: http.StatusOK, body: encodeDevicesBody(resp), ttl: ttl}
+	return devicesResult{status: http.StatusOK, body: encodeDevicesBody(resp), ttl: ttl, stale: stale}
 }
 
 // firstLine trims a multi-line stderr capture to its first line for the JSON

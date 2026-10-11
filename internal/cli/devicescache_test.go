@@ -21,7 +21,24 @@ func resetDevicesCache(t *testing.T) {
 	}
 	reset()
 	origNow := devicesNow
-	t.Cleanup(func() { devicesNow = origNow; reset() })
+	t.Cleanup(func() {
+		// A background refresh reads devicesNow: let it finish before restoring.
+		waitIdle := func() bool {
+			sharedDevices.mu.Lock()
+			defer sharedDevices.mu.Unlock()
+			for _, e := range sharedDevices.entries {
+				if e.refreshing {
+					return false
+				}
+			}
+			return true
+		}
+		for i := 0; i < 400 && !waitIdle(); i++ {
+			time.Sleep(5 * time.Millisecond)
+		}
+		devicesNow = origNow
+		reset()
+	})
 }
 
 // slowStub is a limitStub that holds every request for delay.
@@ -109,13 +126,11 @@ func TestDevicesCacheCompleteUsesFullTTL(t *testing.T) {
 	g.advance(devicesCacheTTL - time.Second)
 	g.get("ttl full")
 	if g.hits() != h {
-		t.Errorf("complete result must still be cached just under 5m")
+		t.Errorf("complete result must still be cached just under 15m")
 	}
 	g.advance(2 * time.Second)
-	g.get("ttl full")
-	if g.hits() == h {
-		t.Errorf("complete result must expire after 5m")
-	}
+	g.get("ttl full") // stale: served at once, refreshed in the background
+	waitFor(t, "background refresh", func() bool { return g.hits() > h })
 }
 
 func TestDevicesCacheRateLimitedUsesShortTTL(t *testing.T) {
