@@ -14,7 +14,7 @@ import (
 )
 
 // withSlowDossier installs a canned dossier that takes d to produce, standing in
-// for the eleven-probe synthesis.
+// for the thirteen-probe synthesis.
 func withSlowDossier(t *testing.T, d time.Duration) {
 	t.Helper()
 	old := synthesize

@@ -46,7 +46,7 @@ const indexFormula = "attention_index = mean(value) over readable activity signa
 // probeConcurrency bounds how many probes hit the upstream feeds at once.
 // The probes are independent, so the ceiling is politeness to openFDA rather
 // than correctness: the keyless public API is shared by every user of this
-// deployment, and eleven simultaneous request bursts per page load is a poor
+// deployment, and thirteen simultaneous request bursts per page load is a poor
 // neighbour. Six keeps the wall-clock close to the unbounded case while
 // leaving headroom. Raise it only with a measurement, not a guess.
 const probeConcurrency = 6

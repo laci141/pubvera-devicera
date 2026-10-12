@@ -9,8 +9,8 @@ import (
 )
 
 // A page load calls /api/dossier and /api/signals at the same moment for the
-// same device, and both commands run the identical eleven-probe suite: twenty-
-// two probe runs where eleven would do, each pair racing the other for the same
+// same device, and both commands run the identical thirteen-probe suite: twenty-
+// six probe runs where thirteen would do, each pair racing the other for the same
 // upstream feeds. synthGroup collapses that into one run.
 //
 // It does two related things. Requests that arrive while a run is in flight
@@ -83,7 +83,7 @@ func logSynthesis(device string, d *intelligence.IntelligenceDossier, err error,
 	}
 	// The notes name the probe and carry its error verbatim, e.g.
 	// "benchmark/severity-delta unavailable: ...". They are the answer to
-	// "which of the eleven dropped out, and why".
+	// "which of the thirteen dropped out, and why".
 	if len(d.LogNotes) > 0 {
 		attrs = append(attrs, "notes", d.LogNotes)
 	}
