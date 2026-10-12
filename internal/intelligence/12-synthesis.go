@@ -65,6 +65,7 @@ func (s *SynthesisAnalyzer) probes() []dossierProbe {
 	ben := &BenchmarkAnalyzer{data: s.data}
 	lif := &LifecycleAnalyzer{data: s.data}
 	rep := &ReportingAnalyzer{data: s.data}
+	cmp := &ComplianceAnalyzer{data: s.data}
 	return []dossierProbe{
 		{"telemetry/severity", tel.AnalyzeSeverity},
 		{"telemetry/volume", tel.AnalyzeVolume},
@@ -79,6 +80,8 @@ func (s *SynthesisAnalyzer) probes() []dossierProbe {
 		{"lifecycle/recall-recency", lif.AnalyzeRecallRecency},
 		{"reporting/independent", rep.AnalyzeIndependentReporting},
 		{"reporting/missing-dates", rep.AnalyzeMissingEventDates},
+		{"compliance/root-cause-design", cmp.AnalyzeRootCauseDesign},
+		{"compliance/open-recall-share", cmp.AnalyzeOpenRecallShare},
 	}
 }
 
@@ -103,6 +106,8 @@ var signalDirections = map[string]direction{
 	SignalPeerSeverityDelta: directionConcern,
 	SignalLifecyclePhase:    directionActivity,
 	SignalRecallRecency:     directionActivity,
+	SignalRootCauseDesign:   directionConcern,
+	SignalOpenRecallShare:   directionConcern,
 }
 
 // probeResult is one probe's outcome, held until every probe has finished.

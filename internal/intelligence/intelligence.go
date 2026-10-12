@@ -22,6 +22,12 @@ func NewCorrelationAnalyzer(data Data) *CorrelationAnalyzer {
 	return &CorrelationAnalyzer{data: data}
 }
 
+// NewComplianceAnalyzer builds Module 04 (design-type root-cause share and
+// open-recall share) over any read-only Data view.
+func NewComplianceAnalyzer(data Data) *ComplianceAnalyzer {
+	return &ComplianceAnalyzer{data: data}
+}
+
 // NewManufacturerAnalyzer builds Module 05 (firm-level enforcement readings:
 // recall severity, recall trend, open-recall load) over any read-only Data view.
 func NewManufacturerAnalyzer(data Data) *ManufacturerAnalyzer {

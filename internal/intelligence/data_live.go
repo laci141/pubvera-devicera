@@ -369,3 +369,19 @@ func computeVolumeBaseline(ctx context.Context) (int, int, error) {
 	p95 := vals[int(0.95*float64(len(vals)-1))]
 	return p95, len(vals), nil
 }
+
+// recallSource is the openFDA device/recall adapter. It is not in the source
+// registry (see sources.OpenFDADeviceRecall), so liveData holds it directly.
+var recallSource = sources.NewOpenFDADeviceRecall()
+
+func (liveData) RecallRootCauseCounts(ctx context.Context, device string) (map[string]int, error) {
+	return recallSource.CountField(ctx, sources.Query{Term: device}, "root_cause_description.exact")
+}
+
+func (liveData) RecallStatusCounts(ctx context.Context, device string) (map[string]int, error) {
+	counter, err := enforcementCounter()
+	if err != nil {
+		return nil, err
+	}
+	return counter.CountField(ctx, sources.Query{Term: device}, "status.exact")
+}

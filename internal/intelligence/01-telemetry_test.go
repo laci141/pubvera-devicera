@@ -43,6 +43,8 @@ type mockData struct {
 	reporterTypes  map[string]int
 	missingTotals  map[string]int // field -> total missing
 	makerCounts    map[string]int
+	rootCauses     map[string]int // root_cause_description -> recalls
+	recallStatuses map[string]int // enforcement status -> records
 }
 
 func (m mockData) EventTypeCounts(context.Context, string) (map[string]int, error) {
@@ -111,6 +113,12 @@ func (m mockData) EventTotalMissing(_ context.Context, _ string, field string) (
 }
 func (m mockData) ManufacturerNameCounts(context.Context, string) (map[string]int, error) {
 	return m.makerCounts, nil
+}
+func (m mockData) RecallRootCauseCounts(context.Context, string) (map[string]int, error) {
+	return m.rootCauses, nil
+}
+func (m mockData) RecallStatusCounts(context.Context, string) (map[string]int, error) {
+	return m.recallStatuses, nil
 }
 
 func TestAnalyzeSeverity(t *testing.T) {
