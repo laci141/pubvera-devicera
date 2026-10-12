@@ -204,6 +204,10 @@ type Data interface {
 	ReporterSourceCounts(ctx context.Context, device string) (map[string]int, error)
 	EventTotalMissing(ctx context.Context, device, field string) (int, error)
 	ManufacturerNameCounts(ctx context.Context, device string) (map[string]int, error)
+	// Compliance reads (Module 04): the device recalls' root_cause_description
+	// distribution (openFDA device/recall) and the enforcement status distribution.
+	RecallRootCauseCounts(ctx context.Context, device string) (map[string]int, error)
+	RecallStatusCounts(ctx context.Context, device string) (map[string]int, error)
 }
 
 // ComplianceAction is one dated regulatory action on the timeline.

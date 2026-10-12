@@ -14,17 +14,19 @@ import (
 // read Unknown — which the dossier must exclude from the index.
 func synthesisFixture() mockData {
 	return mockData{
-		eventTypes:    map[string]int{"Death": 10, "Injury": 30, "Malfunction": 60},
-		recalls:       5,
-		p95:           300,
-		sample:        100,
-		recallClasses: map[string]int{"Class I": 1, "Class II": 4},
-		recallActions: []ComplianceAction{act("20260331", "Class I", "Z-1")},
-		trials:        10,
-		pubs:          100,
-		globalTypes:   map[string]int{"Death": 5, "Injury": 10, "Malfunction": 85},
-		reporterTypes: map[string]int{"Health Professional": 40, "COMPANY REPRESENTATIVE": 60},
-		missingTotals: map[string]int{"date_of_event": 20},
+		eventTypes:     map[string]int{"Death": 10, "Injury": 30, "Malfunction": 60},
+		recalls:        5,
+		p95:            300,
+		sample:         100,
+		recallClasses:  map[string]int{"Class I": 1, "Class II": 4},
+		recallActions:  []ComplianceAction{act("20260331", "Class I", "Z-1")},
+		trials:         10,
+		pubs:           100,
+		globalTypes:    map[string]int{"Death": 5, "Injury": 10, "Malfunction": 85},
+		reporterTypes:  map[string]int{"Health Professional": 40, "COMPANY REPRESENTATIVE": 60},
+		missingTotals:  map[string]int{"date_of_event": 20},
+		rootCauses:     map[string]int{"Device Design": 30, "Other": 70},
+		recallStatuses: map[string]int{"Ongoing": 2, "Terminated": 3},
 	}
 }
 
@@ -35,8 +37,8 @@ func TestSynthesizeFullDossier(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(d.Signals) != 11 {
-		t.Errorf("signals=%d want 11 (every probe reports)", len(d.Signals))
+	if len(d.Signals) != 13 {
+		t.Errorf("signals=%d want 13 (every probe reports)", len(d.Signals))
 	}
 	if len(d.DataQuality) != 2 {
 		t.Errorf("data-quality entries=%d want 2", len(d.DataQuality))
@@ -143,8 +145,8 @@ func TestSynthesizePartialOnProbeFailure(t *testing.T) {
 	if !strings.Contains(d.Reasoning, "PARTIAL") {
 		t.Errorf("partial dossier must say so: %s", d.Reasoning)
 	}
-	if len(d.Signals) != 10 {
-		t.Errorf("signals=%d want 10 (11 probes minus the failed one)", len(d.Signals))
+	if len(d.Signals) != 12 {
+		t.Errorf("signals=%d want 12 (13 probes minus the failed one)", len(d.Signals))
 	}
 }
 
@@ -192,4 +194,29 @@ func TestLiveSynthesis(t *testing.T) {
 		Reasoning       string
 	}{d.Device, d.AttentionIndex, d.SignalsMeasured, d.Highlights, d.DataQuality, d.Notes, d.Reasoning}, "", "  ")
 	t.Logf("dossier:\n%s", b)
+}
+
+// TestSynthesizeIncludesComplianceSignals proves Module 04 is wired into the
+// dossier: both signals appear, as concern readings kept out of the index.
+func TestSynthesizeIncludesComplianceSignals(t *testing.T) {
+	pinClock(t)
+	d, err := NewSynthesisAnalyzer(synthesisFixture()).Synthesize(context.Background(), "pacemaker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]Signal{}
+	for _, s := range d.Signals {
+		got[s.SignalType] = s
+	}
+	design, ok := got[SignalRootCauseDesign]
+	if !ok || design.Value != 0.3 || design.Label != LabelLow {
+		t.Errorf("ROOT_CAUSE_DESIGN in dossier: %+v ok=%v want 0.3/Low", design, ok)
+	}
+	open, ok := got[SignalOpenRecallShare]
+	if !ok || open.Value != 0.4 || open.Label != LabelMedium {
+		t.Errorf("OPEN_RECALL_SHARE in dossier: %+v ok=%v want 0.4/Medium", open, ok)
+	}
+	if d.SignalsMeasured != 3 {
+		t.Errorf("measured=%d want 3: compliance signals are concern readings, not index inputs", d.SignalsMeasured)
+	}
 }

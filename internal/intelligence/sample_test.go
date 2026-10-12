@@ -106,6 +106,8 @@ func TestSampleOnEveryDossierSignal(t *testing.T) {
 		SignalRecallRecency:        "enforcement records fetched",
 		SignalIndependentReporting: "source-type tags",
 		SignalMissingEventDates:    "MAUDE reports",
+		SignalRootCauseDesign:      "recalls",
+		SignalOpenRecallShare:      "enforcement records",
 	}
 	bandFor := map[string]string{ConfidenceHigh: SampleLarge, ConfidenceMedium: SampleMedium, ConfidenceLow: SampleSmall}
 	if len(d.Signals) != len(units) {
