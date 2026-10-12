@@ -89,7 +89,7 @@ const defaultMaxBodyBytes = 128 << 20 // 128 MiB — comfortably fits a full ope
 const maxAttempts = 3
 
 // maxRetryAfter caps how long a Retry-After header can hold a request. A
-// dossier probe is one of eleven running under a 90s ceiling; obeying a
+// dossier probe is one of thirteen running under a 90s ceiling; obeying a
 // multi-minute value would cost more than the signal is worth, so past this we
 // give up and report the error rather than stall the run.
 const maxRetryAfter = 5 * time.Second

@@ -30,7 +30,7 @@ var (
 	}
 	// synthesize is what the signals/dossier commands call. It routes through
 	// sharedSynth so the two commands, which serve.go dispatches simultaneously
-	// for one page load, run the eleven-probe suite once between them instead of
+	// for one page load, run the thirteen-probe suite once between them instead of
 	// twice. Tests replace this whole function with a canned dossier, which also
 	// keeps the group out of their way.
 	synthesize = func(ctx context.Context, device string) (*intelligence.IntelligenceDossier, error) {

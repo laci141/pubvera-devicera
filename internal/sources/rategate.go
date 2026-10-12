@@ -62,8 +62,8 @@ func (g *rateGate) wait(ctx context.Context) error {
 // varies, so pacing exactly at the limit would still trip it on an unlucky
 // second. 350ms gives ~2.85 req/s — under the cap with room to spare.
 //
-// The cost is small and does not lengthen a dossier run: only two of the eleven
-// probes touch PubMed, and they run alongside nine openFDA probes that take
+// The cost is small and does not lengthen a dossier run: only two of the thirteen
+// probes touch PubMed, and they run alongside 11 other probes that take
 // several seconds each. Serialising four PubMed requests over ~1s fits inside
 // that window. openFDA requests are unaffected — they use their own client.
 var ncbiGate = &rateGate{interval: 350 * time.Millisecond}
