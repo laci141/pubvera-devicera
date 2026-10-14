@@ -2731,16 +2731,36 @@
     triggerDownload(new Blob([toCSV(rows, exportTitle(key))], { type: 'text/csv;charset=utf-8' }), filename);
   }
 
+  // xlsxDateSerial turns 'YYYY-MM-DD' or 'YYYYMMDD' into an Excel date serial
+  // (days since 1899-12-30), in UTC so the local zone cannot shift the day.
+  // Anything else, impossible dates included, returns null.
+  function xlsxDateSerial(v) {
+    var s = String(v == null ? '' : v);
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s) || /^(\d{4})(\d{2})(\d{2})$/.exec(s);
+    if (!m) return null;
+    var y = +m[1], mo = +m[2] - 1, d = +m[3];
+    var t = Date.UTC(y, mo, d);
+    var u = new Date(t);
+    if (u.getUTCFullYear() !== y || u.getUTCMonth() !== mo || u.getUTCDate() !== d) return null;
+    return (t - Date.UTC(1899, 11, 30)) / 86400000;
+  }
+
+  // xlsxSafeText applies toCSV's formula-injection guard to a text cell: a
+  // value a spreadsheet could read as a formula gets a leading apostrophe.
+  function xlsxSafeText(s) {
+    if (!/^-?\d+(\.\d+)?$/.test(s) && /^[ \t\r\n]*[=+\-@]|^[\t\r]/.test(s)) return "'" + s;
+    return s;
+  }
+
   // XLSX: styled header, measured column widths, centered short values,
-  // left-aligned long text, and a color-coded Device Class column.
-  function downloadXLSX(key, filename) {
-    var rows = rowsFromLastData(key);
-    if (!rows || !rows.length) { alert('Run a search first.'); return; }
-    if (typeof XLSX === 'undefined' || !XLSX || !XLSX.utils) { alert('Excel export is unavailable right now (the spreadsheet library did not load). Please use CSV or JSON instead.'); return; }
+  // left-aligned long text, and a color-coded Device Class column. Row 1 is
+  // the title, row 2 the header (autofiltered); the two GUDID date columns
+  // are real date cells.
+  function buildXLSXSheet(rows, title) {
     var cols = [];
     rows.forEach(function (r) { Object.keys(r || {}).forEach(function (k) { if (cols.indexOf(k) === -1) cols.push(k); }); });
     // Row 0 is the provenance title (incl. active filters), row 1 the header.
-    var aoa = [[exportTitle(key)], cols].concat(rows.map(function (r) {
+    var aoa = [[title], cols].concat(rows.map(function (r) {
       return cols.map(function (c) {
         var v = r ? r[c] : '';
         if (v === null || v === undefined || v === false) return '';
@@ -2749,6 +2769,15 @@
       });
     }));
     var ws = XLSX.utils.aoa_to_sheet(aoa);
+    var dateCols = [cols.indexOf('Last Update'), cols.indexOf('First Published')];
+    Object.keys(ws).forEach(function (addr) {
+      if (addr[0] === '!' || ws[addr].t !== 's') return;
+      var cell = ws[addr];
+      var at = XLSX.utils.decode_cell(addr);
+      var serial = (at.r >= 2 && dateCols.indexOf(at.c) !== -1) ? xlsxDateSerial(cell.v) : null;
+      if (serial !== null) ws[addr] = { t: 'n', v: serial, z: 'yyyy-mm-dd' };
+      else cell.v = xlsxSafeText(cell.v);
+    });
 
     var colInfo = cols.map(function (c) {
       var max = String(c).length, sum = 0, cnt = 0;
@@ -2792,10 +2821,43 @@
       }
     }
     ws['!cols'] = colInfo.map(function (ci) { return { wch: ci.wch }; });
-    ws['!freeze'] = { xSplit: 0, ySplit: 2 };
+    ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 1, c: 0 }, e: { r: range.e.r, c: range.e.c } }) };
+    // No freeze: xlsx-js-style 1.2.0 writes no <pane> for !freeze or !views (tools/xlsx_export_test.js).
+    return ws;
+  }
+
+  // buildXLSXWorkbook makes one sheet per {name, rows, title}, in order.
+  function buildXLSXWorkbook(sheets) {
     var wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Devicera');
-    XLSX.writeFile(wb, filename);
+    sheets.forEach(function (sh) { XLSX.utils.book_append_sheet(wb, buildXLSXSheet(sh.rows, sh.title), sh.name); });
+    return wb;
+  }
+
+  // downloadXLSX writes the on-screen rows as sheet "Devicera". For the device
+  // table it also fetches every record the folding hid (unfolded=1, only now,
+  // never during a search) as sheet "All records" with a Group column, the
+  // position of the row's group in the folded API result. If that fetch
+  // fails, the Devicera sheet is still written and the skip is reported.
+  function downloadXLSX(key, filename) {
+    var rows = rowsFromLastData(key);
+    if (!rows || !rows.length) { alert('Run a search first.'); return; }
+    if (typeof XLSX === 'undefined' || !XLSX || !XLSX.utils) { alert('Excel export is unavailable right now (the spreadsheet library did not load). Please use CSV or JSON instead.'); return; }
+    var sheets = [{ name: 'Devicera', rows: rows, title: exportTitle(key) }];
+    if (key !== 'udi' || !deviceView || !currentDevice) {
+      XLSX.writeFile(buildXLSXWorkbook(sheets), filename);
+      return;
+    }
+    fetchJson('/api/devices?device=' + encodeURIComponent(currentDevice) + '&unfolded=1').then(function (res) {
+      var recs = res && res.ok && res.data && res.data.unfolded === true ? res.data.records : null;
+      if (!Array.isArray(recs) || !recs.length) return false;
+      var all = recs.map(function (r) { var o = deviceExportRow(r); o['Group'] = r.group; return o; });
+      sheets.push({ name: 'All records', rows: all, title: exportTitle(key).replace(/ · showing [^·]* rows/, '') +
+        ' · all ' + fmtNum(all.length) + ' fetched records, unfolded; Group = row group in the folded result' });
+      return true;
+    }, function () { return false; }).then(function (ok) {
+      XLSX.writeFile(buildXLSXWorkbook(sheets), filename);
+      if (!ok) alert('The "All records" sheet was skipped: the unfolded device records could not be loaded. The Devicera sheet was exported.');
+    });
   }
 
   // BibTeX: a medical device is a regulatory record, not an article — every
@@ -3066,6 +3128,24 @@
     return 'https://accessgudid.nlm.nih.gov/devices/' + encodeURIComponent(udi);
   }
 
+  // Display-keyed rows: these keys become the CSV/Excel column headers.
+  function deviceExportRow(r) {
+    var o = {};
+    DEVICE_EXPORT_COLS.forEach(function (c) {
+      var v = r[c[0]];
+      if (c[0] === 'last_update' || c[0] === 'publish_date') o[c[1]] = isoDate(v);
+      else if (c[0] === 'product_codes') o[c[1]] = productCodesText(v);
+      else o[c[1]] = v == null ? '' : v;
+    });
+    // The structured code set for the on-screen chips. Not enumerable, so
+    // it never becomes an export column.
+    Object.defineProperty(o, '_codes', { value: Array.isArray(r.product_codes) ? r.product_codes : [] });
+    // Extra export-only column (not in DEVICE_COLS, so not an on-screen
+    // column): the AccessGUDID verify link for CSV/Excel/JSON.
+    o['URL'] = o['UDI'] ? gudidURL(o['UDI']) : '';
+    return o;
+  }
+
   function renderDevicesSection() {
     if (!devicesResp) return;
     if (!devicesResp.ok) {
@@ -3075,23 +3155,7 @@
     var recs = devicesResp.data.records || [];
     if (!recs.length) return;
 
-    // Display-keyed rows: these keys become the CSV/Excel column headers.
-    function toRow(r) {
-      var o = {};
-      DEVICE_EXPORT_COLS.forEach(function (c) {
-        var v = r[c[0]];
-        if (c[0] === 'last_update' || c[0] === 'publish_date') o[c[1]] = isoDate(v);
-        else if (c[0] === 'product_codes') o[c[1]] = productCodesText(v);
-        else o[c[1]] = v == null ? '' : v;
-      });
-      // The structured code set for the on-screen chips. Not enumerable, so
-      // it never becomes an export column.
-      Object.defineProperty(o, '_codes', { value: Array.isArray(r.product_codes) ? r.product_codes : [] });
-      // Extra export-only column (not in DEVICE_COLS, so not an on-screen
-      // column): the AccessGUDID verify link for CSV/Excel/JSON.
-      o['URL'] = o['UDI'] ? gudidURL(o['UDI']) : '';
-      return o;
-    }
+    var toRow = deviceExportRow;
     // Strong rows carry the query in their name or shown FDA category and fill
     // the main table; weak rows matched only through a secondary FDA product
     // code and wait, collapsed, below it. Exports carry both.

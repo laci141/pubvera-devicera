@@ -725,6 +725,21 @@ func devicesResponse(t *testing.T, query string, brand, category []map[string]an
 // answers 500 (-1: none fails). It returns every category request's query.
 func devicesResponseFake(t *testing.T, query string, brand, category []map[string]any, failSkip int) (map[string]any, []url.Values) {
 	t.Helper()
+	rec, reqs := devicesServeFake(t, "device="+url.QueryEscape(query), brand, category, failSkip)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return body, reqs
+}
+
+// devicesServeFake runs handleDevices for the raw query string rawQuery
+// against the fakes devicesResponseFake describes and returns the recorder.
+func devicesServeFake(t *testing.T, rawQuery string, brand, category []map[string]any, failSkip int) (*httptest.ResponseRecorder, []url.Values) {
+	t.Helper()
 	recs := make([]sources.RawRecord, 0, len(brand))
 	for _, raw := range brand {
 		recs = append(recs, sources.RawRecord{Raw: raw})
@@ -763,17 +778,95 @@ func devicesResponseFake(t *testing.T, query string, brand, category []map[strin
 
 	resetDevicesCache(t)
 	rec := httptest.NewRecorder()
-	handleDevices(rec, httptest.NewRequest(http.MethodGet, "/api/devices?device="+url.QueryEscape(query), nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
-	}
-	var body map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	handleDevices(rec, httptest.NewRequest(http.MethodGet, "/api/devices?"+rawQuery, nil))
 	mu.Lock()
 	defer mu.Unlock()
-	return body, reqs
+	return rec, reqs
+}
+
+// TestDevicesUnfolded: without unfolded the response is folded as before;
+// unfolded=1 returns every row left after the UDI dedupe, each with the group
+// (1-based position of its representative in the folded result); any other
+// value is a 400.
+func TestDevicesUnfolded(t *testing.T) {
+	acme := func(di, name string) map[string]any { return udiRaw(di, name, "PNJ", "Leadless Pacemaker") }
+	other := func(di string) map[string]any {
+		raw := acme(di, "Zed Pacer")
+		raw["company_name"] = "Other Co"
+		return raw
+	}
+	brand := func() []map[string]any { return []map[string]any{acme("D1", "Pacer"), acme("D2", "Solo Lead")} }
+	// D1 again (UDI duplicate), three more "Pacer" rows, two "Zed Pacer" rows:
+	// 7 rows after the UDI dedupe, 3 groups after folding.
+	category := func() []map[string]any {
+		return []map[string]any{acme("D1", "Pacer"), acme("C1", "Pacer"), acme("C2", "Pacer"), acme("C3", "Pacer"), other("C4"), other("C5")}
+	}
+	for _, tc := range []struct {
+		name, query string
+		status      int
+		count       int
+		unfolded    bool
+	}{
+		{"folded without param", "device=pacemaker", http.StatusOK, 3, false},
+		{"unfolded=1", "device=pacemaker&unfolded=1", http.StatusOK, 7, true},
+		{"unfolded=0", "device=pacemaker&unfolded=0", http.StatusBadRequest, 0, false},
+		{"unfolded=true", "device=pacemaker&unfolded=true", http.StatusBadRequest, 0, false},
+		{"unfolded empty", "device=pacemaker&unfolded=", http.StatusBadRequest, 0, false},
+		{"unfolded twice", "device=pacemaker&unfolded=1&unfolded=1", http.StatusBadRequest, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec, _ := devicesServeFake(t, tc.query, brand(), category(), -1)
+			if rec.Code != tc.status {
+				t.Fatalf("status=%d, want %d; body=%s", rec.Code, tc.status, rec.Body)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if tc.status != http.StatusOK {
+				if str(body["error"]) == "" {
+					t.Errorf("400 without an error field: %s", rec.Body)
+				}
+				return
+			}
+			rows := asMaps(body["records"])
+			if len(rows) != tc.count || body["count"] != float64(tc.count) {
+				t.Errorf("rows=%d count=%v, want %d", len(rows), body["count"], tc.count)
+			}
+			if got, _ := body["folded_similar"].(float64); got != 4 {
+				t.Errorf("folded_similar=%v, want 4", body["folded_similar"])
+			}
+			if _, has := body["unfolded"]; has != tc.unfolded || (tc.unfolded && body["unfolded"] != true) {
+				t.Errorf("unfolded=%v (present %v), want present=%v", body["unfolded"], has, tc.unfolded)
+			}
+			groupOf := map[string]float64{} // company|name -> group
+			for _, r := range rows {
+				g, has := r["group"].(float64)
+				if has != tc.unfolded {
+					t.Errorf("row %s group=%v, want present=%v", str(r["udi"]), r["group"], tc.unfolded)
+					continue
+				}
+				if !tc.unfolded {
+					continue
+				}
+				if g < 1 || g > 3 {
+					t.Errorf("row %s group=%v, want 1..3", str(r["udi"]), g)
+				}
+				k := str(r["company"]) + "|" + str(r["device_name"])
+				if prev, ok := groupOf[k]; ok && prev != g {
+					t.Errorf("%s split across groups %v and %v", k, prev, g)
+				}
+				groupOf[k] = g
+			}
+			ids := map[float64]bool{}
+			for _, g := range groupOf {
+				ids[g] = true
+			}
+			if tc.unfolded && (len(groupOf) != 3 || len(ids) != 3) {
+				t.Errorf("groups=%v, want 3 keys on 3 distinct ids", groupOf)
+			}
+		})
+	}
 }
 
 // serveDevices is devicesResponse with the records keyed by UDI.

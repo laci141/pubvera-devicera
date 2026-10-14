@@ -1177,13 +1177,11 @@ func collapseDeviceGroups(rows []map[string]any) ([]map[string]any, int) {
 	index := make(map[string]int, len(rows))
 	folded := 0
 	for _, row := range rows {
-		company := strings.ToLower(strings.TrimSpace(str(row["company"])))
-		name := normalizeDeviceName(str(row["device_name"]))
-		if company == "" && name == "" {
+		key := deviceGroupKey(row)
+		if key == "" {
 			out = append(out, row)
 			continue
 		}
-		key := company + "\x00" + strings.ToLower(str(row["product_category"])) + "\x00" + name
 		i, ok := index[key]
 		if !ok {
 			index[key] = len(out)
@@ -1206,6 +1204,54 @@ func collapseDeviceGroups(rows []map[string]any) ([]map[string]any, int) {
 		kept["similar_folded"] = n + 1
 	}
 	return out, folded
+}
+
+// deviceGroupKey is the collapseDeviceGroups key: company, FDA product
+// category and normalised device name. "" means the row is never grouped.
+func deviceGroupKey(row map[string]any) string {
+	company := strings.ToLower(strings.TrimSpace(str(row["company"])))
+	name := normalizeDeviceName(str(row["device_name"]))
+	if company == "" && name == "" {
+		return ""
+	}
+	return company + "\x00" + strings.ToLower(str(row["product_category"])) + "\x00" + name
+}
+
+// assignDeviceGroups sets row["group"] on every (UDI-deduplicated, unfolded)
+// row to the 1-based position of its group's representative in the folded,
+// ranked and capped result, so an unfolded export joins the folded one. The
+// folding runs on shallow copies: the rows themselves keep their own
+// matched_on and carry no similar_folded. A group cut by the cap gets 0.
+// Returns the number of rows the folded result folds away.
+func assignDeviceGroups(rows []map[string]any, query string, max int) int {
+	const keyField = "\x00group_key"
+	keys := make([]string, len(rows))
+	copies := make([]map[string]any, len(rows))
+	for i, row := range rows {
+		keys[i] = deviceGroupKey(row)
+		if keys[i] == "" {
+			keys[i] = "\x01" + strconv.Itoa(i) // ungrouped: a group of its own
+		}
+		c := make(map[string]any, len(row)+1)
+		for k, v := range row {
+			c[k] = v
+		}
+		c[keyField] = keys[i]
+		copies[i] = c
+	}
+	folded, n := collapseDeviceGroups(copies)
+	rankDeviceRows(folded, query)
+	if max > 0 && len(folded) > max {
+		folded = folded[:max]
+	}
+	pos := make(map[string]int, len(folded))
+	for i, c := range folded {
+		pos[c[keyField].(string)] = i + 1
+	}
+	for i, row := range rows {
+		row["group"] = pos[keys[i]]
+	}
+	return n
 }
 
 // rankDeviceRows orders the union by deviceRowScore, highest first. The sort is
@@ -1237,6 +1283,13 @@ func rankDeviceRows(rows []map[string]any, query string) {
 // Returns the rows (capped at max), the number of UDI duplicates folded and
 // the number of near-identical rows folded into a group representative.
 func mergeDeviceRows(brand, category []map[string]any, query string, max int) ([]map[string]any, int, int) {
+	return mergeDeviceRowsMode(brand, category, query, max, false)
+}
+
+// mergeDeviceRowsMode is mergeDeviceRows; unfolded skips the collapse (UDI
+// dedupe, ranking and cap unchanged) and gives every row its group. The
+// folded count is reported either way.
+func mergeDeviceRowsMode(brand, category []map[string]any, query string, max int, unfolded bool) ([]map[string]any, int, int) {
 	out := make([]map[string]any, 0, len(brand)+len(category))
 	seen := make(map[string]int, len(brand)) // udi -> index in out
 	dups := 0
@@ -1259,7 +1312,12 @@ func mergeDeviceRows(brand, category []map[string]any, query string, max int) ([
 	}
 	add(brand, "Brand name")
 	add(category, "Product category")
-	out, folded := collapseDeviceGroups(out)
+	var folded int
+	if unfolded {
+		folded = assignDeviceGroups(out, query, max)
+	} else {
+		out, folded = collapseDeviceGroups(out)
+	}
 	rankDeviceRows(out, query)
 	if max > 0 && len(out) > max {
 		out = out[:max]
@@ -1281,13 +1339,20 @@ func handleDevices(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "device required")
 		return
 	}
+	// unfolded=1 skips the mass-registration folding (the export's All records
+	// sheet); absent keeps today's answer; any other value is rejected.
+	uf, unfolded := r.URL.Query()["unfolded"]
+	if unfolded && (len(uf) != 1 || uf[0] != "1") {
+		writeJSONError(w, http.StatusBadRequest, "unfolded must be 1")
+		return
+	}
 	src, ok := getSource("openfda_device_udi")
 	if !ok {
 		writeJSONError(w, http.StatusBadGateway, "UDI source unavailable")
 		return
 	}
 
-	res, state, err := fetchDevices(r.Context(), r.URL.Path, device, src)
+	res, state, err := fetchDevicesMode(r.Context(), r.URL.Path, device, src, unfolded)
 	if err != nil {
 		return // the caller went away; nothing to write to
 	}
@@ -1300,9 +1365,18 @@ func handleDevices(w http.ResponseWriter, r *http.Request) {
 
 // fetchDevices is the cached path shared by the handler and the prewarm.
 func fetchDevices(ctx context.Context, path, device string, src sources.Source) (devicesResult, string, error) {
+	return fetchDevicesMode(ctx, path, device, src, false)
+}
+
+// fetchDevicesMode is fetchDevices; an unfolded answer is cached under its own
+// key, so it never replaces the folded one.
+func fetchDevicesMode(ctx context.Context, path, device string, src sources.Source, unfolded bool) (devicesResult, string, error) {
 	key := strings.ToLower(strings.TrimSpace(device))
+	if unfolded {
+		key = "unfolded\x00" + key
+	}
 	return sharedDevices.Do(ctx, key, func(ctx context.Context) devicesResult {
-		return computeDevices(ctx, path, device, src)
+		return computeDevices(ctx, path, device, src, unfolded)
 	})
 }
 
@@ -1317,7 +1391,7 @@ func encodeDevicesBody(v any) []byte {
 // failure is a 502 with ttl 0 (never cached); a complete answer gets
 // devicesCacheTTL (stale-servable up to devicesStaleTTL), a rate_limited or
 // partial one devicesShortTTL (never stale).
-func computeDevices(ctx context.Context, path, device string, src sources.Source) devicesResult {
+func computeDevices(ctx context.Context, path, device string, src sources.Source, unfolded bool) devicesResult {
 	var (
 		brandRecs  []sources.RawRecord
 		brandTotal int
@@ -1368,7 +1442,7 @@ func computeDevices(ctx context.Context, path, device string, src sources.Source
 	}
 	// Cap = brand page (100) + category cap (3,000): every fetched row fits, so
 	// the cut can never drop the weak matches the ranking puts last.
-	rows, dups, folded := mergeDeviceRows(brandRows, catRows, device, 100+udiCategoryCap)
+	rows, dups, folded := mergeDeviceRowsMode(brandRows, catRows, device, 100+udiCategoryCap, unfolded)
 
 	resp := map[string]any{
 		"records":          rows,
@@ -1380,6 +1454,9 @@ func computeDevices(ctx context.Context, path, device string, src sources.Source
 		"folded_similar":   folded,
 		"note":             "GUDID device records via openFDA device/udi; union of a brand-name/UDI-DI search (first 100 records) and an FDA product-category search (" + fmt.Sprintf("fetched %s of %s category records", thousands(len(catRecs)), thousands(catTotal)) + ", in pages of 1,000 up to 3,000; fetched_category says how many were fetched out of total_category), deduplicated by UDI (total is approximate when the sets overlap beyond the fetched pages); near-identical rows from one company's product line are folded into a single row carrying similar_folded, and rows are ranked by structural relevance (not by device class); the row cap (3,100) holds every fetched record, so no match is cut; match_strength is strong when the query is in the device name or the shown FDA category and weak when the record matched only through a secondary FDA product code, which match_reason names; registration data may be incomplete or delayed",
 		"disclaimer":       cliutil.Disclaimer,
+	}
+	if unfolded {
+		resp["unfolded"] = true
 	}
 	var partial []string
 	rateLimited := catPageLim

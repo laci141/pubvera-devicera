@@ -451,12 +451,30 @@ test('every export carries the four new columns right after Match Reason, filter
 
   // Excel
   const XLSX = require('xlsx-js-style');
-  const ws = XLSX.readFile((await grab('Excel'))!).Sheets['Devicera'];
+  const ws = XLSX.readFile((await grab('Excel'))!, { cellNF: true }).Sheets['Devicera'];
   const aoa: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
   const xh = aoa[1];
   const xr = xh.indexOf('Match Reason');
   expect(xh.slice(xr + 1, xr + 5)).toEqual(NEW_EXPORT_COLS);
-  for (const r of aoa.slice(2)) expect(r.slice(xr + 1, xr + 5).map(String)).toEqual(want(byUDI.get(String(r[xh.indexOf('UDI')]))));
+  // Dates are real Excel dates: a numeric cell formatted yyyy-mm-dd whose
+  // text is the source ISO date. Empty dates stay empty text cells.
+  const dateCols: [string, string][] = [['Last Update', 'last_update'], ['First Published', 'publish_date']];
+  for (const [i, r] of aoa.slice(2).entries()) {
+    const src = byUDI.get(String(r[xh.indexOf('UDI')]));
+    expect(src).toBeTruthy();
+    const got = r.slice(xr + 1, xr + 5).map(String);
+    const exp = want(src);
+    expect(got.slice(0, 3)).toEqual(exp.slice(0, 3));
+    for (const [col, field] of dateCols) {
+      const c = xh.indexOf(col);
+      expect(c, col).toBeGreaterThanOrEqual(0);
+      const cell = ws[XLSX.utils.encode_cell({ r: i + 2, c })];
+      if (!src[field]) { expect(String(cell ? cell.v : ''), col).toBe(''); continue; }
+      expect(cell.t, col).toBe('n');
+      expect(cell.z, col).toBe('yyyy-mm-dd');
+      expect(XLSX.SSF.format(cell.z, cell.v), col).toBe(src[field]);
+    }
+  }
 
   // BibTeX: model number as the version, the rest in the note.
   const bib = fs.readFileSync((await grab('BibTeX'))!, 'utf8');
