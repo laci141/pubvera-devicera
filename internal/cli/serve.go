@@ -1290,7 +1290,7 @@ func mergeDeviceRows(brand, category []map[string]any, query string, max int) ([
 // dedupe, ranking and cap unchanged) and gives every row its group. The
 // folded count is reported either way.
 func mergeDeviceRowsMode(brand, category []map[string]any, query string, max int, unfolded bool) ([]map[string]any, int, int) {
-	out :=make([]map[string]any, 0, len(brand)+len(category))
+	out := make([]map[string]any, 0, len(brand)+len(category))
 	seen := make(map[string]int, len(brand)) // udi -> index in out
 	dups := 0
 	add := func(rows []map[string]any, label string) {
