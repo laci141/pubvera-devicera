@@ -46,6 +46,14 @@ jobs:
           cache-dependency-path: e2e/package-lock.json
       - name: Install dependencies
         run: npm ci
+      # go test does not run the node tests in tools/. They run here, after
+      # npm ci, because xlsx_export_test.js loads e2e/node_modules/xlsx-js-style.
+      # The job's default working directory is e2e, so this step resets it to
+      # the repository root. "|| exit 1" fails on the first failing test.
+      - name: Node unit tests
+        working-directory: .
+        run: |
+          for t in tools/*_test.js; do echo "== $t"; node "$t" || exit 1; done
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
       - name: Browser tests
