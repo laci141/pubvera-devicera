@@ -105,4 +105,16 @@ function firstData(value) {
 // h) strictly numeric string stays unchanged
 check('h) numeric string "-5" unchanged', firstData('-5') === '-5', 'got ' + JSON.stringify(firstData('-5')));
 
+// i) full-width starters are neutralized, also after leading whitespace
+['\uFF1D1+1', '\uFF0B1+1', '\uFF0D1+1', '\uFF20SUM(A1)', ' \uFF1D1+1', '\n\uFF1D1+1'].forEach(function (s) {
+  const got = firstData(s);
+  check('i) neutralized ' + JSON.stringify(s), got === "'" + s, 'got ' + JSON.stringify(got));
+});
+
+// j) full-width characters that are not a leading starter stay unchanged
+['a\uFF1Db', 'Medtronic \uFF20 x', '\uFF41bc'].forEach(function (s) {
+  const got = firstData(s);
+  check('j) unchanged ' + JSON.stringify(s), got === s, 'got ' + JSON.stringify(got));
+});
+
 process.exit(failed ? 1 : 0);
