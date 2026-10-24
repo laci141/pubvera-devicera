@@ -114,6 +114,21 @@ function rowsHeader(ws) {
   return out;
 }
 
+// 5b) full-width starters are neutralized in the finished workbook cells
+(function () {
+  const fw = ['\uFF1D1+1', '\uFF0B1+1', '\uFF0D1+1', '\uFF20SUM(A1)', ' \uFF1D1+1', '\n\uFF1D1+1'];
+  const rowsFw = fw.map(function (s, i) { return { UDI: 'F' + i, 'Device Name': s }; });
+  const wbFw = lib.buildXLSXWorkbook([{ name: 'Devicera', rows: rowsFw, title: 'fw' }]);
+  const wsFw = wbFw.Sheets['Devicera'];
+  fw.forEach(function (s, i) {
+    const cell = wsFw[XLSX.utils.encode_cell({ r: 2 + i, c: 1 })];
+    check('5b) full-width neutralized ' + JSON.stringify(s), cell && cell.t === 's' && cell.v === "'" + s, JSON.stringify(cell));
+  });
+  ['a\uFF1Db', 'Medtronic \uFF20 x', '\uFF41bc'].forEach(function (s) {
+    check('5b) full-width text unchanged ' + JSON.stringify(s), lib.xlsxSafeText(s) === s, JSON.stringify(lib.xlsxSafeText(s)));
+  });
+})();
+
 // 7) read-back: the numeric serial and its date format survive the file
 (function () {
   const back = XLSX.read(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }), { type: 'buffer', cellNF: true });

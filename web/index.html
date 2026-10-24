@@ -2748,7 +2748,7 @@
   // xlsxSafeText applies toCSV's formula-injection guard to a text cell: a
   // value a spreadsheet could read as a formula gets a leading apostrophe.
   function xlsxSafeText(s) {
-    if (!/^-?\d+(\.\d+)?$/.test(s) && /^[ \t\r\n]*[=+\-@]|^[\t\r]/.test(s)) return "'" + s;
+    if (!/^-?\d+(\.\d+)?$/.test(s) && /^[ \t\r\n]*[=+\-@\uFF1D\uFF0B\uFF0D\uFF20]|^[\t\r]/.test(s)) return "'" + s;
     return s;
   }
 
