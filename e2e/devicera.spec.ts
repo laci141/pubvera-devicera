@@ -1,4 +1,4 @@
-import { test as base, expect, type Page, type Route } from '@playwright/test';
+import { test as base, expect, type Locator, type Page, type Route } from '@playwright/test';
 import fs from 'fs';
 import path from 'path';
 
@@ -117,6 +117,14 @@ const test = base.extend<Harness>({
   },
 });
 
+// Downloads go through the toolbar's Export menu: open the first menu in
+// scope, then click the menu item with that label.
+async function clickExport(scope: Page | Locator, label: string) {
+  const wrap = scope.locator('.dl-menu-wrap').first();
+  await wrap.locator('.dl-trigger').click();
+  await wrap.getByRole('menuitem', { name: label, exact: true }).click();
+}
+
 async function search(page: Page) {
   await page.goto('/');
   await page.locator('#device-input').fill(DEVICE);
@@ -150,7 +158,7 @@ test('smoke: pacemaker search renders hero, signals and device table', async ({ 
   // The locally served spreadsheet library loaded (SRI matched) and exports.
   expect(await page.evaluate(() => typeof (window as any).XLSX)).toBe('object');
   const download = page.waitForEvent('download');
-  await page.locator('.dev-card button', { hasText: 'Excel' }).click();
+  await clickExport(page.locator('.dev-card'), 'Excel');
   expect((await download).suggestedFilename()).toBe('devicera-devices.xlsx');
 
   expect(pageErrors).toEqual([]);
@@ -253,7 +261,7 @@ test('Excel export without the XLSX library alerts instead of throwing', async (
   await search(page);
   expect(await page.evaluate(() => typeof (window as any).XLSX)).toBe('undefined');
 
-  await page.locator('.dev-card button', { hasText: 'Excel' }).click();
+  await clickExport(page.locator('.dev-card'), 'Excel');
   await expect.poll(() => dialogs.length).toBe(1);
   expect(dialogs[0]).toBe(
     'Excel export is unavailable right now (the spreadsheet library did not load). Please use CSV or JSON instead.');
@@ -316,7 +324,7 @@ test('CSV export carries every row, strong and weak, with a Match Reason column'
   await search(page);
 
   const download = page.waitForEvent('download');
-  await page.locator('.dev-card button', { hasText: 'CSV' }).click();
+  await clickExport(page.locator('.dev-card'), 'CSV');
   const file = await (await download).path();
   const lines = parseCSV(fs.readFileSync(file!, 'utf8').replace(/^﻿/, ''));
   expect(lines[0].join(',')).toBe('sep=,'); // Excel separator hint
@@ -430,7 +438,7 @@ test('every export carries the four new columns right after Match Reason, filter
   const card = page.locator('.dev-card');
   const grab = async (label: string) => {
     const download = page.waitForEvent('download');
-    await card.locator('button', { hasText: label }).click();
+    await clickExport(card, label);
     return (await download).path();
   };
 
@@ -633,7 +641,7 @@ test('chip bars: CSV export after a main chip and a weak chip carries exactly th
   expect(visible.sort()).toEqual([ZOLL[0].udi, ZOLL_WEAK_SPLIT[3].udi].sort());
 
   const download = page.waitForEvent('download');
-  await card.locator('button', { hasText: 'CSV' }).click();
+  await clickExport(card, 'CSV');
   const lines = parseCSV(fs.readFileSync((await (await download).path())!, 'utf8').replace(/^﻿/, ''));
   const header = lines[2];
   const udis = lines.slice(3).filter((r) => r.length > 1).map((r) => r[header.indexOf('UDI')]);
@@ -1220,7 +1228,7 @@ test('P5 a stale response of an older search is ignored (page and CSV show only 
   await expect(page.locator(HERO + ' .device-name')).toHaveText(DEVICE);
   await expect(page.locator('h2.section', { hasText: 'Device Records' })).toHaveText('📇 Device Records (' + devices.records.length + ')');
   const download = page.waitForEvent('download');
-  await page.locator(DEV_CARD + ' button', { hasText: 'CSV' }).click();
+  await clickExport(page.locator(DEV_CARD), 'CSV');
   const file = await (await download).path();
   const lines = parseCSV(fs.readFileSync(file!, 'utf8').replace(/^﻿/, ''));
   expect(lines.slice(3).filter((r) => r.length > 1)).toHaveLength(devices.records.length);
@@ -1306,7 +1314,7 @@ test('P8 export buttons exist only for painted cards and the CSV matches the row
   await expect(page.locator('button', { hasText: 'CSV' })).toHaveCount(1);
   await expect(page.locator(HERO)).toHaveCount(0);
   const download = page.waitForEvent('download');
-  await page.locator(DEV_CARD + ' button', { hasText: 'CSV' }).click();
+  await clickExport(page.locator(DEV_CARD), 'CSV');
   const file = await (await download).path();
   const lines = parseCSV(fs.readFileSync(file!, 'utf8').replace(/^﻿/, ''));
   expect(lines.slice(3).filter((r) => r.length > 1)).toHaveLength(devices.records.length);
@@ -1490,7 +1498,7 @@ test('Q4 CSV after moving to page 3 holds every filtered row, not the 50 on scre
   const wm = /Weak matches \((?:(\d+) \/ )?(\d+)\)/.exec(weakLabel || '')!;
   const weakShown = Number(wm[1] ?? wm[2]);
   const download = page.waitForEvent('download');
-  await page.locator('.dev-card button', { hasText: 'CSV' }).click();
+  await clickExport(page.locator('.dev-card'), 'CSV');
   const file = await (await download).path();
   const lines = parseCSV(fs.readFileSync(file!, 'utf8').replace(/^﻿/, ''));
   const body = lines.slice(3).filter((r) => r.length > 1);
@@ -1580,5 +1588,65 @@ test('Q8 the pagers are labelled navigation landmarks with disabled end buttons 
   await expect(live).toHaveText(pageInfo((pages - 1) * 50 + 1, strong.length, strong.length, pages, pages));
   await expect(next).toBeDisabled();
   await expect(prev).toBeEnabled();
+  expect(pageErrors).toEqual([]);
+});
+
+// The Device Records toolbar is one WAI-ARIA menu button; Excel, CSV, JSON and
+// BibTeX live in its hidden panel.
+const EXP_TRIGGER = '.dev-card .dl-trigger';
+const EXP_MENU = '.dev-card .dl-menu';
+
+test('EXP1 one Export trigger opens a four-item menu; Escape, ArrowDown and an outside click work', async ({ page, pageErrors }) => {
+  await search(page);
+  const trigger = page.locator(EXP_TRIGGER);
+  const menu = page.locator(EXP_MENU);
+  await expect(trigger).toHaveCount(1);
+  await expect(trigger).toHaveText('⬇ Export ▾');
+  await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  await expect(menu).toBeHidden();
+  await trigger.click();
+  await expect(menu).toBeVisible();
+  await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+  await expect(menu.getByRole('menuitem')).toHaveText(['Excel', 'CSV', 'JSON', 'BibTeX']);
+  await page.keyboard.press('Escape');
+  await expect(menu).toBeHidden();
+  await expect(trigger).toBeFocused();
+  await page.keyboard.press('ArrowDown');
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole('menuitem').first()).toBeFocused();
+  await page.locator('h2.section', { hasText: 'Device Records' }).click();
+  await expect(menu).toBeHidden();
+  await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  expect(pageErrors).toEqual([]);
+});
+
+test('EXP2 at 343 px the page does not scroll sideways and the open panel stays inside the viewport', async ({ page, pageErrors }) => {
+  await page.setViewportSize({ width: 343, height: 800 });
+  await search(page);
+  await expect(page.locator(EXP_TRIGGER)).toHaveCount(1);
+  const widths = await page.evaluate(() => [document.documentElement.scrollWidth, window.innerWidth]);
+  expect(widths[0], 'scrollWidth vs innerWidth ' + widths.join(' / ')).toBeLessThanOrEqual(widths[1]);
+  const trigger = page.locator(EXP_TRIGGER);
+  const tb = (await trigger.boundingBox())!;
+  expect(tb.width).toBeGreaterThanOrEqual(44);
+  expect(tb.height).toBeGreaterThanOrEqual(44);
+  await trigger.click();
+  const menu = page.locator(EXP_MENU);
+  await expect(menu).toBeVisible();
+  const mb = (await menu.boundingBox())!;
+  expect(mb.x).toBeGreaterThanOrEqual(0);
+  expect(mb.x + mb.width).toBeLessThanOrEqual(343);
+  expect(pageErrors).toEqual([]);
+});
+
+test('EXP3 the open panel has a solid themed background in both themes', async ({ page, pageErrors }) => {
+  await search(page);
+  await page.locator(EXP_TRIGGER).click();
+  const menu = page.locator(EXP_MENU);
+  await expect(menu).toBeVisible();
+  const bg = () => menu.evaluate((el) => getComputedStyle(el).backgroundColor);
+  expect(await bg()).toBe('rgba(25, 35, 63, 0.9)');
+  await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
+  expect(await bg()).toBe('rgba(227, 236, 248, 0.9)');
   expect(pageErrors).toEqual([]);
 });
