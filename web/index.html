@@ -29,6 +29,7 @@
     --glass: rgba(255, 255, 255, 0.06);
     --glass-strong: rgba(255, 255, 255, 0.09);
     --th-solid: #19233f;
+    --menu-bg: rgba(25, 35, 63, 0.9);
     --glass-border: rgba(255, 255, 255, 0.12);
     --glass-glow: rgba(120, 160, 255, 0.18);
     --ink:   #e8edf7;
@@ -52,6 +53,7 @@
     --glass: rgba(255, 255, 255, 0.55);
     --glass-strong: rgba(255, 255, 255, 0.72);
     --th-solid: #e3ecf8;
+    --menu-bg: rgba(227, 236, 248, 0.9);
     --glass-border: rgba(12, 58, 102, 0.14);
     --glass-glow: rgba(37, 99, 235, 0.14);
     --ink:   #16233c;
@@ -668,7 +670,7 @@
 
   /* ---- Export suite: meta-row, download buttons, quick filter ---- */
   .meta-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.6rem; gap: 12px; flex-wrap: wrap; }
-  .meta-row .meta { font-size: 0.82rem; color: var(--ink-2); }
+  .meta-row .meta { font-size: 0.82rem; color: var(--ink-2); min-width: 0; overflow-wrap: anywhere; }
   .dl {
     background: var(--glass-strong);
     border: 1px solid var(--glass-border);
@@ -683,7 +685,43 @@
     flex-shrink: 0;
   }
   .dl:hover { border-color: var(--accent); color: var(--ink); }
-  .dl-group { display: flex; gap: 8px; flex-shrink: 0; align-items: center; flex-wrap: wrap; }
+  .dl-group { display: flex; gap: 8px; flex-shrink: 1; min-width: 0; max-width: 100%; align-items: center; flex-wrap: wrap; }
+  /* Export menu button (WAI-ARIA menu button); the panel is solid, no blur. */
+  .dl-menu-wrap { position: relative; margin-left: auto; }
+  .dl-trigger { min-height: 44px; min-width: 44px; }
+  .dl-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .dl-menu {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 6px);
+    z-index: 10;
+    min-width: 150px;
+    max-width: calc(100vw - 32px);
+    padding: 6px;
+    border: 1px solid var(--glass-border);
+    border-radius: 12px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    background: var(--menu-bg);
+    color: var(--ink);
+  }
+  .dl-menu[hidden] { display: none; }
+  .dl-item {
+    min-height: 44px;
+    padding: 0 14px;
+    text-align: left;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    color: var(--ink);
+    font: inherit;
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .dl-item:hover, .dl-item:focus-visible { border-color: var(--accent); color: var(--accent); outline: none; }
   .qfilter {
     background: var(--glass-strong);
     border: 1px solid var(--glass-border);
@@ -692,12 +730,15 @@
     color: var(--ink);
     font-size: 0.78rem;
     width: 190px;
+    min-width: 0;
+    max-width: 100%;
   }
   .qfilter:focus { outline: none; border-color: var(--accent); }
   .qcount { color: var(--accent); font-size: 0.78rem; font-weight: 600; margin-left: 6px; }
   .quick-class3 { border-color: rgba(239, 68, 68, 0.5); color: var(--crit); }
   .quick-class3.active { background: rgba(239, 68, 68, 0.18); }
   .cat-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 0.7rem; }
+  .cat-bar .dl { white-space: normal; max-width: 100%; flex-shrink: 1; overflow-wrap: anywhere; text-align: left; }
   .cat-bar .cat-lbl { font-size: 0.75rem; color: var(--ink-3); margin-right: 2px; white-space: nowrap; }
   .cat-chip .cnt { color: var(--ink-3); font-weight: 400; margin-left: 5px; }
   .cat-chip.active { border-color: var(--accent); color: var(--accent); background: var(--glass-glow); }
@@ -916,6 +957,8 @@
     .signal-card.span2 { grid-column: span 1; }
     #device-input { flex-basis: 100%; }
     #search-btn { width: 100%; }
+    .dl-group { width: 100%; }
+    .qfilter { flex: 1 1 100%; width: auto; }
     /* Same derivation as on <body>, with this breakpoint's bar padding:
        0.35rem top and bottom, the tallest child, the 1px hairline. The child
        terms are unchanged, because nothing that sets the bar's height shrinks
@@ -2992,12 +3035,107 @@
       '<span class="dl-group">' +
       '<input class="qfilter" type="text" placeholder="🔍 Filter results…">' +
       (key === 'udi' ? '<button type="button" class="dl quick-class3" title="Show only Class III (highest-risk classification) devices">⚠ Class III</button>' : '') +
-      '<button type="button" class="dl" title="BibTeX citations for these device records (@misc)" onclick="downloadBibTeX(\'' + key + '\',\'' + bibName + '\')">⬇ BibTeX</button>' +
-      '<button type="button" class="dl" onclick="downloadXLSX(\'' + key + '\',\'' + xlsxName + '\')">⬇ Excel</button>' +
-      '<button type="button" class="dl" onclick="downloadCSV(\'' + key + '\',\'' + csvName + '\')">⬇ CSV</button>' +
-      '<button type="button" class="dl" onclick="downloadJSON(\'' + key + '\',\'' + filename + '\')">⬇ JSON</button>' +
+      exportMenuHTML(key, filename, xlsxName, csvName, bibName) +
       '</span></div>';
   }
+
+  // ── Export menu: one WAI-ARIA menu button replaces the four download buttons.
+  var EXPORT_DL = { xlsx: downloadXLSX, csv: downloadCSV, json: downloadJSON, bib: downloadBibTeX };
+
+  function dlAttrEsc(v) {
+    return String(v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  // The panel id counter lives on metaRow, so every toolbar gets its own id.
+  function exportMenuHTML(key, jsonName, xlsxName, csvName, bibName) {
+    metaRow.menuSeq = (metaRow.menuSeq || 0) + 1;
+    var id = 'dl-menu-' + metaRow.menuSeq;
+    var item = function (dl, name, label, title) {
+      return '<button type="button" class="dl-item" role="menuitem" data-dl="' + dl + '" data-key="' + dlAttrEsc(key) +
+        '" data-filename="' + dlAttrEsc(name) + '"' + (title ? ' title="' + title + '"' : '') + '>' + label + '</button>';
+    };
+    return '<span class="dl-menu-wrap">' +
+      '<button type="button" class="dl dl-trigger" aria-haspopup="menu" aria-expanded="false" aria-controls="' + id + '">⬇ Export ▾</button>' +
+      '<span class="dl-menu" role="menu" id="' + id + '" hidden>' +
+      item('xlsx', xlsxName, 'Excel') + item('csv', csvName, 'CSV') + item('json', jsonName, 'JSON') +
+      item('bib', bibName, 'BibTeX', 'BibTeX citations for these device records (@misc)') +
+      '</span></span>';
+  }
+
+  function exportMenuItems(menu) {
+    return Array.prototype.slice.call(menu.querySelectorAll('[role="menuitem"]'));
+  }
+
+  function anyExportMenuOpen() {
+    return !!document.querySelector('.dl-trigger[aria-expanded="true"]');
+  }
+
+  // Closes every open panel; focus goes back to opener when one is passed.
+  function closeExportMenus(opener) {
+    var open = document.querySelectorAll('.dl-trigger[aria-expanded="true"]');
+    for (var i = 0; i < open.length; i++) {
+      open[i].setAttribute('aria-expanded', 'false');
+      var m = document.getElementById(open[i].getAttribute('aria-controls'));
+      if (m) m.hidden = true;
+    }
+    if (opener) opener.focus();
+  }
+
+  function toggleExportMenu(btn) {
+    var wasOpen = btn.getAttribute('aria-expanded') === 'true';
+    closeExportMenus();
+    if (wasOpen) return;
+    var menu = document.getElementById(btn.getAttribute('aria-controls'));
+    if (!menu) return;
+    btn.setAttribute('aria-expanded', 'true');
+    menu.hidden = false;
+    var items = exportMenuItems(menu);
+    if (items.length) items[0].focus();
+  }
+
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    var item = t && t.closest ? t.closest('.dl-menu [role="menuitem"]') : null;
+    if (item) {
+      var wrap = item.closest('.dl-menu-wrap');
+      var opener = wrap ? wrap.querySelector('.dl-trigger') : null;
+      var fn = EXPORT_DL[item.getAttribute('data-dl')];
+      closeExportMenus(opener);
+      if (fn) fn(item.getAttribute('data-key'), item.getAttribute('data-filename'));
+      if (opener) opener.focus();
+      return;
+    }
+    var trig = t && t.closest ? t.closest('.dl-trigger') : null;
+    if (trig) { toggleExportMenu(trig); return; }
+    // triggerDownload's anchor click is untrusted and must not close anything.
+    if (e.isTrusted === false) return;
+    if (anyExportMenuOpen() && !(t && t.closest && t.closest('.dl-menu-wrap'))) closeExportMenus();
+  });
+
+  document.addEventListener('keydown', function (e) {
+    var t = e.target;
+    if (!t || !t.closest) return;
+    var k = e.key;
+    if (t.closest('.dl-trigger') && (k === 'ArrowDown' || k === 'Enter' || k === ' ')) {
+      e.preventDefault();
+      if (t.getAttribute('aria-expanded') !== 'true') toggleExportMenu(t);
+      else { var first = exportMenuItems(document.getElementById(t.getAttribute('aria-controls'))); if (first.length) first[0].focus(); }
+      return;
+    }
+    var menu = t.closest('.dl-menu');
+    if (!menu) return;
+    var wrap = menu.closest('.dl-menu-wrap');
+    var opener = wrap ? wrap.querySelector('.dl-trigger') : null;
+    var items = exportMenuItems(menu);
+    var i = items.indexOf(t);
+    if (k === 'Escape') { e.preventDefault(); closeExportMenus(opener); }
+    else if (k === 'Tab') closeExportMenus();
+    else if (k === 'ArrowDown') { e.preventDefault(); items[(i + 1) % items.length].focus(); }
+    else if (k === 'ArrowUp') { e.preventDefault(); items[(i - 1 + items.length) % items.length].focus(); }
+    else if (k === 'Home') { e.preventDefault(); items[0].focus(); }
+    else if (k === 'End') { e.preventDefault(); items[items.length - 1].focus(); }
+  });
+  // ── end Export menu
 
   // ---- Device Records (GUDID) table: quick filter, sortable columns ----
   var DEVICE_COLS = [
