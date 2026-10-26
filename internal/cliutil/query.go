@@ -18,10 +18,11 @@ import (
 //   - Class filters are a QUOTED STRING classification:"Class I", never an
 //     array (an array returns zero hits).
 
-// Phrase builds field:"term". Embedded double quotes in the term are stripped
-// so they cannot break out of the phrase.
+// Phrase builds field:"term". Embedded double quotes and backslashes in the
+// term are stripped: a quote could break out of the phrase, and a trailing
+// backslash would escape the closing quote and leave the phrase unterminated.
 func Phrase(field, term string) string {
-	term = strings.ReplaceAll(strings.TrimSpace(term), `"`, "")
+	term = strings.NewReplacer(`"`, "", `\`, "").Replace(strings.TrimSpace(term))
 	return fmt.Sprintf(`%s:"%s"`, field, term)
 }
 

@@ -1261,7 +1261,9 @@
 
   // Builds the clickable raw-query links for one signal type.
   function verifyLinks(type, device) {
-    var enc = encodeURIComponent(device);
+    // Same rule as cliutil.Phrase on the server: a quote or backslash in the
+    // term would break out of (or unterminate) the quoted phrase in the URL.
+    var enc = encodeURIComponent(String(device).replace(/["\\]/g, ''));
     var maudeApi = {
       label: 'openFDA MAUDE — live event-type counts (JSON)',
       url: 'https://api.fda.gov/device/event.json?search=device.generic_name:%22' + enc + '%22&count=event_type.exact'
@@ -3021,7 +3023,7 @@
     URL.revokeObjectURL(url);
   }
 
-  // The metaRow buttons use inline onclick, so the handlers must be global.
+  // Kept global for compatibility; the Export menu calls these via EXPORT_DL.
   window.downloadCSV = downloadCSV;
   window.downloadXLSX = downloadXLSX;
   window.downloadBibTeX = downloadBibTeX;

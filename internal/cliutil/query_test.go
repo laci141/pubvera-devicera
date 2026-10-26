@@ -12,6 +12,8 @@ func TestPhrase(t *testing.T) {
 		{"recalling_firm", "Acme Medical", `recalling_firm:"Acme Medical"`},
 		{"product_description", `bad"quote`, `product_description:"badquote"`},
 		{"recalling_firm", "  trimmed  ", `recalling_firm:"trimmed"`},
+		{"device.generic_name", `abc\`, `device.generic_name:"abc"`},
+		{"device.generic_name", `a\"b`, `device.generic_name:"ab"`},
 	}
 	for _, c := range cases {
 		if got := Phrase(c.field, c.term); got != c.want {
