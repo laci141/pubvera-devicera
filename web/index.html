@@ -1082,6 +1082,7 @@
 
 <footer class="glass">
   Educational use only. NOT medical advice.
+  <span id="app-version"></span>
 </footer>
 </div>
 
@@ -3911,6 +3912,21 @@
   }
 
   initAuth().catch(() => { /* stay in unauthenticated mode */ });
+</script>
+
+<!-- Build version from /version (handleVersion in internal/cli/serve.go).
+     textContent only; on any failure the span stays empty. -->
+<script>
+(function () {
+  fetch('/version', { cache: 'no-store' })
+    .then((r) => (r.ok ? r.json() : Promise.reject()))
+    .then((d) => {
+      if (d && typeof d.version === 'string' && d.version) {
+        document.getElementById('app-version').textContent = 'Devicera v' + d.version;
+      }
+    })
+    .catch(() => { /* leave the footer without a version */ });
+})();
 </script>
 
 </body>
