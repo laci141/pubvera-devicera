@@ -35,6 +35,12 @@ const moduleCount = 12
 // without mutating the real process environment.
 var getenv = os.Getenv
 
+// appVersion is the CalVer build version (YYYY.MM.DD.N). The release workflow
+// stamps it with -ldflags "-X <this package>.appVersion=..."; a local or pull
+// request build keeps "dev". GET /version reports it and the page footer shows
+// it. It is separate from the CLI's own version string in cmd/.
+var appVersion = "dev"
+
 // cmdServe starts an HTTP server that exposes the command surface as JSON
 // endpoints (same-origin API for a future HTML frontend). Each endpoint is a
 // thin adapter over the existing command handlers run in --json mode, so the
@@ -260,6 +266,9 @@ func NewServeHandler() http.Handler {
 	// /healthz alias: the other seven Pubvera apps expose /healthz, and external
 	// monitors probe that path by convention. Same handler, no behaviour change.
 	mux.HandleFunc("/healthz", handleHealth)
+	// Not under /api/, like /healthz: the footer reads it before sign-in, and it
+	// carries nothing but the build version.
+	mux.HandleFunc("/version", handleVersion)
 	mux.HandleFunc("/api/trend", handleTrend)
 	mux.HandleFunc("/api/failure-modes", handleFailureModes)
 	mux.HandleFunc("/api/devices", handleDevices)
@@ -297,6 +306,19 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 		"modules":    moduleCount,
 		"disclaimer": cliutil.Disclaimer,
 	})
+}
+
+// handleVersion returns {"version":"<appVersion>"}. no-store, so the footer
+// never shows the version of an image that has since been replaced. GET and
+// HEAD only; anything else is a JSON 405 naming both.
+func handleVersion(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]string{"version": appVersion})
 }
 
 // browserConfig is the bootstrap payload /config.json hands to the page so it

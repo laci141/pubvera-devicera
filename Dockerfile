@@ -6,7 +6,11 @@ RUN go mod download
 COPY . .
 # CGO off: the SQLite driver (modernc.org/sqlite) is pure Go, so the binary
 # is fully static and portable into the slim runtime image.
-RUN CGO_ENABLED=0 go build -o mdi ./cmd/medical-device-intelligence-pp-cli
+# The CalVer version from the release workflow; "dev" for any other build.
+ARG APP_VERSION=dev
+RUN CGO_ENABLED=0 go build \
+    -ldflags "-X github.com/laci141/medical-device-intelligence/internal/cli.appVersion=${APP_VERSION}" \
+    -o mdi ./cmd/medical-device-intelligence-pp-cli
 
 # Stage 2: minimal runtime
 FROM debian:trixie-slim
@@ -19,6 +23,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app
 WORKDIR /app
 COPY --from=builder /app/mdi .
+# The CalVer version the server reports on /version.
+ARG APP_VERSION=dev
+LABEL org.opencontainers.image.version=$APP_VERSION
 # The serve command listens on every interface, on $PORT when it is set and
 # on 8080 otherwise. On the Hetzner box (pubvera-01) docker-compose.yml sets
 # PORT=8092 and publishes it only on the host's 127.0.0.1:8092, behind Caddy.
