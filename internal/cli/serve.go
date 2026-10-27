@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -285,10 +286,21 @@ func NewServeHandler() http.Handler {
 			if !allowGET(w, r) {
 				return
 			}
+			// Fail closed: without a fresh nonce there is no page and no policy.
+			var nb [16]byte
+			if _, err := nonceRandRead(nb[:]); err != nil {
+				writeJSONError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			nonce := base64.RawStdEncoding.EncodeToString(nb[:])
+			// bytes.ReplaceAll returns a new slice; web.Index is never modified.
+			data := bytes.ReplaceAll(web.Index, []byte(nonceMarker), []byte(nonce))
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			// Revalidate on every load so a deploy is visible immediately.
-			w.Header().Set("Cache-Control", "no-cache")
-			_, _ = w.Write(web.Index)
+			// Never stored, so a deploy is visible on the next load and a cached
+			// copy cannot replay one nonce to every visitor.
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set(cspHeaderName, contentSecurityPolicy(nonce))
+			_, _ = w.Write(data)
 			return
 		}
 		writeJSONError(w, http.StatusNotFound, "not found")
