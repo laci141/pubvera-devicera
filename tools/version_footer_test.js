@@ -27,7 +27,7 @@ const ids = html.match(/\bid=["']app-version["']/g) || [];
 check("1 exactly one id=\"app-version\" (found " + ids.length + ")", ids.length === 1);
 
 // The script block that does the fetch.
-const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)].map((m) => ({ attrs: m[1], body: m[2] }));
+const scripts = [...html.matchAll(/<script\b(?: nonce="__CSP_NONCE__")?([^>]*)>([\s\S]*?)<\/script>/gi)].map((m) => ({ attrs: m[1], body: m[2] }));
 const found = scripts.filter((s) => /fetch\(\s*['"]\/version['"]/.test(s.body));
 const block = found.length === 1 ? found[0].body : "";
 check("2 exactly one script fetches '/version' (found " + found.length + ")", found.length === 1);
