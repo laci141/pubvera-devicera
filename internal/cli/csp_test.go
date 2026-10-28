@@ -99,6 +99,18 @@ func TestCSPHeaderIsEnforcedWithExactPolicy(t *testing.T) {
 	}
 }
 
+// TestCSPIndexSendsOnlyTheEnforcingHeader does not use indexNonce, so a missing
+// enforcing header does not hide the Report-Only check.
+func TestCSPIndexSendsOnlyTheEnforcingHeader(t *testing.T) {
+	rec := get(NewServeHandler(), "/")
+	if got := rec.Header().Get("Content-Security-Policy"); got == "" {
+		t.Errorf("GET /: Content-Security-Policy = %q, want a policy", got)
+	}
+	if got := rec.Header().Get("Content-Security-Policy-Report-Only"); got != "" {
+		t.Errorf("GET /: Content-Security-Policy-Report-Only = %q, want none", got)
+	}
+}
+
 func TestCSPIndexIsNoStore(t *testing.T) {
 	for _, path := range []string{"/", "/index.html"} {
 		_, _, h := indexNonce(t, path)
@@ -141,8 +153,13 @@ func TestCSPRandFailureIs500(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("GET /: status = %d, want 500", rec.Code)
 	}
-	if rec.Header().Get("Content-Security-Policy") != "" || rec.Header().Get("Content-Security-Policy-Report-Only") != "" || strings.Contains(rec.Body.String(), "<script") {
-		t.Error("GET /: page or policy served despite nonce failure")
+	for _, name := range []string{"Content-Security-Policy", "Content-Security-Policy-Report-Only"} {
+		if got := rec.Header().Get(name); got != "" {
+			t.Errorf("GET /: %s = %q, want none", name, got)
+		}
+	}
+	if strings.Contains(rec.Body.String(), "<script") {
+		t.Errorf("GET /: body contains <script despite nonce failure")
 	}
 }
 
@@ -154,7 +171,9 @@ func TestCSPUnknownPathStillJSON404(t *testing.T) {
 	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
 		t.Errorf("GET /nope: Content-Type = %q", ct)
 	}
-	if rec.Header().Get("Content-Security-Policy") != "" || rec.Header().Get("Content-Security-Policy-Report-Only") != "" {
-		t.Error("GET /nope: carries the index policy")
+	for _, name := range []string{"Content-Security-Policy", "Content-Security-Policy-Report-Only"} {
+		if got := rec.Header().Get(name); got != "" {
+			t.Errorf("GET /nope: %s = %q, want none", name, got)
+		}
 	}
 }
