@@ -12,9 +12,9 @@ import (
 	"github.com/laci141/medical-device-intelligence/web"
 )
 
-// CSP phase 1: every <script> tag in the embedded index carries
+// CSP phase 2: every <script> tag in the embedded index carries
 // nonce="__CSP_NONCE__", and each index response replaces that marker with a
-// fresh nonce named in a Report-Only policy header. All requests go through
+// fresh nonce named in the enforced Content-Security-Policy header. All requests go through
 // NewServeHandler in-process (httptest), like root_cache_test.go.
 
 // wantPolicy is written out here rather than taken from contentSecurityPolicy,
@@ -40,10 +40,10 @@ func indexNonce(t *testing.T, path string) (string, string, http.Header) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET %s: status = %d, want 200", path, rec.Code)
 	}
-	csp := rec.Header().Get("Content-Security-Policy-Report-Only")
+	csp := rec.Header().Get("Content-Security-Policy")
 	m := cspNonceRE.FindStringSubmatch(csp)
 	if m == nil {
-		t.Fatalf("GET %s: Content-Security-Policy-Report-Only = %q, want a 22-character nonce", path, csp)
+		t.Fatalf("GET %s: Content-Security-Policy = %q, want a 22-character nonce", path, csp)
 	}
 	return m[1], rec.Body.String(), rec.Header()
 }
@@ -86,15 +86,15 @@ func TestCSPHeaderNonceMatchesEveryBodyNonce(t *testing.T) {
 	}
 }
 
-func TestCSPHeaderIsReportOnlyWithExactPolicy(t *testing.T) {
+func TestCSPHeaderIsEnforcedWithExactPolicy(t *testing.T) {
 	nonce, _, h := indexNonce(t, "/")
-	if got := h.Get("Content-Security-Policy-Report-Only"); got != wantPolicy(nonce) {
-		t.Errorf("policy = %q, want %q", got, wantPolicy(nonce))
+	if got := h.Get("Content-Security-Policy"); got != wantPolicy(nonce) {
+		t.Errorf("Content-Security-Policy = %q, want %q", got, wantPolicy(nonce))
 	}
-	if got := h.Get("Content-Security-Policy"); got != "" {
-		t.Errorf("enforcing Content-Security-Policy = %q, want none in phase 1", got)
+	if got := h.Get("Content-Security-Policy-Report-Only"); got != "" {
+		t.Errorf("Content-Security-Policy-Report-Only = %q, want none: a leftover Report-Only copy must not be sent", got)
 	}
-	if cspHeaderName != "Content-Security-Policy-Report-Only" {
+	if cspHeaderName != "Content-Security-Policy" {
 		t.Errorf("cspHeaderName = %q", cspHeaderName)
 	}
 }
@@ -141,7 +141,7 @@ func TestCSPRandFailureIs500(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("GET /: status = %d, want 500", rec.Code)
 	}
-	if rec.Header().Get("Content-Security-Policy-Report-Only") != "" || strings.Contains(rec.Body.String(), "<script") {
+	if rec.Header().Get("Content-Security-Policy") != "" || rec.Header().Get("Content-Security-Policy-Report-Only") != "" || strings.Contains(rec.Body.String(), "<script") {
 		t.Error("GET /: page or policy served despite nonce failure")
 	}
 }
@@ -154,7 +154,7 @@ func TestCSPUnknownPathStillJSON404(t *testing.T) {
 	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
 		t.Errorf("GET /nope: Content-Type = %q", ct)
 	}
-	if rec.Header().Get("Content-Security-Policy-Report-Only") != "" {
+	if rec.Header().Get("Content-Security-Policy") != "" || rec.Header().Get("Content-Security-Policy-Report-Only") != "" {
 		t.Error("GET /nope: carries the index policy")
 	}
 }
