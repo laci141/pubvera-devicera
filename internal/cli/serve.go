@@ -277,6 +277,9 @@ func NewServeHandler() http.Handler {
 	// the page needs this config BEFORE it can sign anyone in. Serving it from a
 	// protected path would make the requirement circular.
 	mux.HandleFunc("/config.json", handleConfig)
+	// Not under /api/ either: browsers post violation reports without
+	// credentials, so the collector must not sit behind forward_auth.
+	mux.HandleFunc("/csp-report", handleCSPReport)
 	for path, route := range apiRoutes {
 		mux.HandleFunc(path, routeHandler(route))
 	}
@@ -300,6 +303,9 @@ func NewServeHandler() http.Handler {
 			// copy cannot replay one nonce to every visitor.
 			w.Header().Set("Cache-Control", "no-store")
 			w.Header().Set(cspHeaderName, contentSecurityPolicy(nonce))
+			_, _, origin := supabaseConfig()
+			w.Header().Set(cspReportOnlyHeaderName, cspConnectSrcReportOnly(origin))
+			w.Header().Set(reportingEndpointsHeaderName, `csp="/csp-report"`)
 			_, _ = w.Write(data)
 			return
 		}
@@ -356,11 +362,9 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// supaURL, not url: the net/url package is imported in this file.
-	supaURL := strings.TrimSpace(getenv("SUPABASE_URL"))
-	supaKey := strings.TrimSpace(getenv("SUPABASE_PUBLISHABLE_KEY"))
-	if supaURL == "" || supaKey == "" {
-		supaURL, supaKey = "", ""
-	}
+	// supabaseConfig keeps the TrimSpace and half-config rules, and is the
+	// same source the index page's Report-Only connect-src reads.
+	supaURL, supaKey, _ := supabaseConfig()
 	// Never cache: a stale key surviving a key rotation would be hard to
 	// diagnose from the browser side.
 	w.Header().Set("Cache-Control", "no-store")

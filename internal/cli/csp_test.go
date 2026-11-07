@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"regexp"
@@ -94,28 +95,67 @@ func TestCSPHeaderIsEnforcedWithExactPolicy(t *testing.T) {
 	if got := h.Get("Content-Security-Policy"); got != wantPolicy(nonce) {
 		t.Errorf("Content-Security-Policy = %q, want %q", got, wantPolicy(nonce))
 	}
-	if got := h.Values("Content-Security-Policy-Report-Only"); len(got) != 0 {
-		t.Errorf("Content-Security-Policy-Report-Only = %q, want none (S2 enforces style-src)", got)
-	}
 	if cspHeaderName != "Content-Security-Policy" {
 		t.Errorf("cspHeaderName = %q", cspHeaderName)
 	}
 }
 
-// TestCSPIndexSendsOnlyTheEnforcingHeader checks the header count directly, so
-// a second CSP value or a leftover Report-Only header fails here.
-func TestCSPIndexSendsOnlyTheEnforcingHeader(t *testing.T) {
-	nonce, _, h := indexNonce(t, "/")
-	got := h.Values("Content-Security-Policy")
-	if len(got) != 1 {
-		t.Fatalf("GET /: %d Content-Security-Policy values %q, want 1", len(got), got)
+// TestCSPIndexSendsEnforcingAndConnectSrcReportOnly checks the header counts
+// directly: one enforced policy, unchanged since style S2, and one Report-Only
+// policy that carries connect-src alone (connect-src PR A).
+func TestCSPIndexSendsEnforcingAndConnectSrcReportOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		env    map[string]string
+		wantRO string
+	}{
+		{"with supabase", map[string]string{"SUPABASE_URL": "https://dgoksxpnzsvpnhlpcalx.supabase.co", "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_test"},
+			"connect-src 'self' https://dgoksxpnzsvpnhlpcalx.supabase.co; report-to csp; report-uri /csp-report"},
+		{"without supabase", map[string]string{},
+			"connect-src 'self'; report-to csp; report-uri /csp-report"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withEnv(t, tc.env)
+			nonce, _, h := indexNonce(t, "/")
+			if got := h.Values("Content-Security-Policy"); len(got) != 1 || got[0] != wantPolicy(nonce) {
+				t.Errorf("GET /: Content-Security-Policy values %q, want exactly [%q]", got, wantPolicy(nonce))
+			}
+			if got := h.Values("Content-Security-Policy-Report-Only"); len(got) != 1 || got[0] != tc.wantRO {
+				t.Errorf("GET /: Content-Security-Policy-Report-Only values %q, want exactly [%q]", got, tc.wantRO)
+			}
+			if got := h.Values("Reporting-Endpoints"); len(got) != 1 || got[0] != `csp="/csp-report"` {
+				t.Errorf("GET /: Reporting-Endpoints values %q, want exactly [%q]", got, `csp="/csp-report"`)
+			}
+		})
 	}
-	if ro := h.Values("Content-Security-Policy-Report-Only"); len(ro) != 0 {
-		t.Errorf("GET /: Content-Security-Policy-Report-Only = %q, want none", ro)
-	}
-	for _, d := range []string{"style-src 'nonce-" + nonce + "'", "style-src-attr 'none'"} {
-		if !strings.Contains(got[0], d) {
-			t.Errorf("GET /: Content-Security-Policy = %q, want it to contain %q", got[0], d)
+}
+
+// The page connects to the URL /config.json hands it; the Report-Only header
+// must name exactly that URL's origin. Whitespace around the values is the
+// case where two separate readers of the environment would disagree.
+func TestCSPConfigJSONAgreesWithReportOnlyHeader(t *testing.T) {
+	for _, tc := range []struct{ envURL, envKey, wantURL, wantRO string }{
+		{" https://dgoksxpnzsvpnhlpcalx.supabase.co ", " pk_test ", "https://dgoksxpnzsvpnhlpcalx.supabase.co",
+			"connect-src 'self' https://dgoksxpnzsvpnhlpcalx.supabase.co; report-to csp; report-uri /csp-report"},
+		{"https://dgoksxpnzsvpnhlpcalx.supabase.co", "", "", "connect-src 'self'; report-to csp; report-uri /csp-report"},
+		{"", "", "", "connect-src 'self'; report-to csp; report-uri /csp-report"},
+	} {
+		withEnv(t, map[string]string{"SUPABASE_URL": tc.envURL, "SUPABASE_PUBLISHABLE_KEY": tc.envKey})
+		h := NewServeHandler()
+		cfgRec := get(h, "/config.json")
+		var cfg browserConfig
+		if err := json.Unmarshal(cfgRec.Body.Bytes(), &cfg); err != nil {
+			t.Fatalf("env %q: /config.json body %q: %v", tc.envURL, cfgRec.Body.String(), err)
+		}
+		if cfg.SupabaseURL != tc.wantURL {
+			t.Errorf("env %q: /config.json supabase_url = %q, want %q", tc.envURL, cfg.SupabaseURL, tc.wantURL)
+		}
+		ro := get(h, "/").Header().Get("Content-Security-Policy-Report-Only")
+		if ro != tc.wantRO {
+			t.Errorf("env %q: Report-Only = %q, want %q", tc.envURL, ro, tc.wantRO)
+		}
+		if cfg.SupabaseURL != "" && !strings.Contains(ro, " "+cfg.SupabaseURL+";") {
+			t.Errorf("env %q: Report-Only %q does not allow the /config.json url %q", tc.envURL, ro, cfg.SupabaseURL)
 		}
 	}
 }
@@ -186,7 +226,7 @@ func TestCSPRandFailureIs500(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("GET /: status = %d, want 500", rec.Code)
 	}
-	for _, name := range []string{"Content-Security-Policy", "Content-Security-Policy-Report-Only"} {
+	for _, name := range []string{"Content-Security-Policy", "Content-Security-Policy-Report-Only", "Reporting-Endpoints"} {
 		if got := rec.Header().Get(name); got != "" {
 			t.Errorf("GET /: %s = %q, want none", name, got)
 		}
@@ -204,7 +244,7 @@ func TestCSPUnknownPathStillJSON404(t *testing.T) {
 	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
 		t.Errorf("GET /nope: Content-Type = %q", ct)
 	}
-	for _, name := range []string{"Content-Security-Policy", "Content-Security-Policy-Report-Only"} {
+	for _, name := range []string{"Content-Security-Policy", "Content-Security-Policy-Report-Only", "Reporting-Endpoints"} {
 		if got := rec.Header().Get(name); got != "" {
 			t.Errorf("GET /nope: %s = %q, want none", name, got)
 		}
