@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// connect-src PR A (Report-Only): the collector tests are ported from
+// connect-src PR B (enforcing): the collector tests are ported from
 // Praxvera's csp_report_test.go. Every request goes through NewServeHandler,
 // which also proves the route is registered.
 
@@ -239,11 +239,11 @@ func TestSupabaseConfig(t *testing.T) {
 	}
 }
 
-func TestCSPConnectSrcReportOnlyLiteral(t *testing.T) {
-	if got, want := cspConnectSrcReportOnly(""), "connect-src 'self'; report-to csp; report-uri /csp-report"; got != want {
-		t.Errorf("cspConnectSrcReportOnly(\"\") = %q, want %q", got, want)
+func TestCSPConnectSrcLiteral(t *testing.T) {
+	if got, want := cspConnectSrc(""), "; connect-src 'self'; report-to csp; report-uri /csp-report"; got != want {
+		t.Errorf("cspConnectSrc(\"\") = %q, want %q", got, want)
 	}
-	if got, want := cspConnectSrcReportOnly("https://abc.supabase.co"), "connect-src 'self' https://abc.supabase.co; report-to csp; report-uri /csp-report"; got != want {
-		t.Errorf("cspConnectSrcReportOnly(origin) = %q, want %q", got, want)
+	if got, want := cspConnectSrc("https://abc.supabase.co"), "; connect-src 'self' https://abc.supabase.co; report-to csp; report-uri /csp-report"; got != want {
+		t.Errorf("cspConnectSrc(origin) = %q, want %q", got, want)
 	}
 }

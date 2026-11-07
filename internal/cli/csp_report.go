@@ -16,17 +16,17 @@ import (
 	"unicode/utf8"
 )
 
-// connect-src PR A: a separate Content-Security-Policy-Report-Only header on
-// the index page carries connect-src alone, so a connection outside it is
-// reported to POST /csp-report (logged here) but not blocked. The enforced
-// header (csp.go) is unchanged; enforcement is PR B. supabaseConfig, cspHostRE
+// connect-src PR B: the one enforcing Content-Security-Policy header on the
+// index page (csp.go, serve.go) ends with connect-src, so a connection outside
+// it is blocked and reported to POST /csp-report (logged here with
+// disposition=enforce). supabaseConfig, cspHostRE
 // and the collector are copied from Praxvera (csp_report.go) with identical
 // behaviour. Measured before this change: the page's fetch calls reach only
 // 'self' and the Supabase origin; no XHR, WebSocket, EventSource or beacon.
 
 // supabaseConfig is the one place that decides whether the page has a Supabase
 // config. /config.json hands url and key to the page; the index response puts
-// origin into the Report-Only connect-src. Both call this per request, so the page and the
+// origin into the enforcing connect-src. Both call this per request, so the page and the
 // header can never disagree, and an environment change needs no restart.
 //
 // url and key follow the old /config.json rule exactly: TrimSpace both, and if
@@ -52,11 +52,12 @@ func supabaseConfig() (supaURL, supaKey, origin string) {
 // in a host, which inside a CSP header would start a new directive.
 var cspHostRE = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?$`)
 
-// cspConnectSrcReportOnly is the whole Content-Security-Policy-Report-Only
-// value of one index response: connect-src ('self', plus origin when
-// non-empty) and the report directives.
-func cspConnectSrcReportOnly(origin string) string {
-	src := "connect-src 'self'"
+// cspConnectSrc is the tail of the enforcing policy of one index response: it
+// starts with "; " so it appends to contentSecurityPolicy(nonce), and carries
+// connect-src ('self', plus origin when non-empty) and the report directives,
+// which apply to every directive of that one header.
+func cspConnectSrc(origin string) string {
+	src := "; connect-src 'self'"
 	if origin != "" {
 		src += " " + origin
 	}
