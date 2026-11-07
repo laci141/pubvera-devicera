@@ -18,13 +18,14 @@ if (!fs.existsSync(file)) {
   process.exit(1);
 }
 var html = fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n");
-var a = html.indexOf("<style>");
+var styleOpen = /<style\b[^>]*>/.exec(html);
+var a = styleOpen ? styleOpen.index : -1;
 var b = html.indexOf("</style>");
 if (a < 0 || b < a) {
   console.error("FAIL: the <style> block not found in web/index.html - refusing to pass silently");
   process.exit(1);
 }
-var css = html.slice(a + 7, b).replace(/\/\*[^]*?\*\//g, "");
+var css = html.slice(a + styleOpen[0].length, b).replace(/\/\*[^]*?\*\//g, "");
 var markup = html.slice(0, a) + html.slice(b);
 
 var failures = 0;

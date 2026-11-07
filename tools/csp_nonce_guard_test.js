@@ -7,7 +7,9 @@
 // strings separately:
 //   G1 no on*= attribute inside an HTML tag (script bodies stripped first);
 //   G2 no on*=" built inside a JS string literal in any inline script;
-//   G3 every <script tag carries nonce="__CSP_NONCE__".
+//   G3 every <script tag carries nonce="__CSP_NONCE__";
+//   G4 every <style tag carries nonce="__CSP_NONCE__" (style phase S1);
+//   G5 no style= attribute (style-src-attr 'none').
 "use strict";
 const fs = require("fs");
 const path = require("path");
@@ -43,6 +45,16 @@ const opens = [...html.matchAll(/<script\b[^>]*>/gi)].map((m) => m[0]);
 const missing = opens.filter((t) => !/\snonce="__CSP_NONCE__"/.test(t));
 check("G3 every <script tag has nonce=\"__CSP_NONCE__\" (" + opens.length + " tags, " + missing.length + " missing)", opens.length > 0 && missing.length === 0);
 for (const t of missing) console.log("      missing: " + t.slice(0, 80));
+
+// G4: every opening <style tag carries the marker.
+const styleOpens = [...html.matchAll(/<style\b[^>]*>/gi)].map((m) => m[0]);
+const styleMissing = styleOpens.filter((t) => !/\snonce="__CSP_NONCE__"/.test(t));
+check("G4 every <style tag has nonce=\"__CSP_NONCE__\" (" + styleOpens.length + " tags, " + styleMissing.length + " missing)", styleOpens.length > 0 && styleMissing.length === 0);
+for (const t of styleMissing) console.log("      missing: " + t.slice(0, 80));
+
+// G5: no inline style attribute in markup.
+const styleAttrs = [...markup.matchAll(/<[a-z][^>]*\sstyle\s*=/gi)];
+check("G5 no style= attribute in HTML tags (found " + styleAttrs.length + ")", styleAttrs.length === 0);
 
 if (ran === 0) {
   console.error("FAIL: zero checks ran - refusing to pass silently");

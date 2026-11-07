@@ -23,6 +23,14 @@ func wantPolicy(nonce string) string {
 	return "script-src 'nonce-" + nonce + "' 'strict-dynamic' https: 'unsafe-inline'; script-src-attr 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 }
 
+// wantStylePolicy is the Report-Only style policy (style phase S1), written out
+// for the same reason as wantPolicy.
+func wantStylePolicy(nonce string) string {
+	return "style-src 'nonce-" + nonce + "'; style-src-attr 'none'"
+}
+
+var styleOpenRE = regexp.MustCompile(`<style\b[^>]*>`)
+
 // nonceMarkerText is spelled out so a renamed constant cannot agree with itself.
 const nonceMarkerText = "__CSP_NONCE__"
 
@@ -54,8 +62,8 @@ func TestCSPMarkerReplacedInResponse(t *testing.T) {
 		if strings.Contains(body, nonceMarkerText) {
 			t.Errorf("GET %s: body still contains %s", path, nonceMarkerText)
 		}
-		if n := strings.Count(body, `nonce="`+nonce+`"`); n != 5 {
-			t.Errorf("GET %s: %d tags carry the header nonce, want 5", path, n)
+		if n := strings.Count(body, `nonce="`+nonce+`"`); n != 6 {
+			t.Errorf("GET %s: %d tags carry the header nonce, want 6 (5 script, 1 style)", path, n)
 		}
 	}
 }
@@ -91,23 +99,50 @@ func TestCSPHeaderIsEnforcedWithExactPolicy(t *testing.T) {
 	if got := h.Get("Content-Security-Policy"); got != wantPolicy(nonce) {
 		t.Errorf("Content-Security-Policy = %q, want %q", got, wantPolicy(nonce))
 	}
-	if got := h.Get("Content-Security-Policy-Report-Only"); got != "" {
-		t.Errorf("Content-Security-Policy-Report-Only = %q, want none: a leftover Report-Only copy must not be sent", got)
+	if got := h.Get("Content-Security-Policy-Report-Only"); got != wantStylePolicy(nonce) {
+		t.Errorf("Content-Security-Policy-Report-Only = %q, want %q", got, wantStylePolicy(nonce))
+	}
+	if strings.Contains(h.Get("Content-Security-Policy"), "style-src") {
+		t.Errorf("Content-Security-Policy names style-src; S1 must leave the enforced policy unchanged")
 	}
 	if cspHeaderName != "Content-Security-Policy" {
 		t.Errorf("cspHeaderName = %q", cspHeaderName)
 	}
 }
 
-// TestCSPIndexSendsOnlyTheEnforcingHeader does not use indexNonce, so a missing
+// TestCSPIndexSendsBothHeaders does not use indexNonce, so a missing
 // enforcing header does not hide the Report-Only check.
-func TestCSPIndexSendsOnlyTheEnforcingHeader(t *testing.T) {
+func TestCSPIndexSendsBothHeaders(t *testing.T) {
 	rec := get(NewServeHandler(), "/")
 	if got := rec.Header().Get("Content-Security-Policy"); got == "" {
 		t.Errorf("GET /: Content-Security-Policy = %q, want a policy", got)
 	}
-	if got := rec.Header().Get("Content-Security-Policy-Report-Only"); got != "" {
-		t.Errorf("GET /: Content-Security-Policy-Report-Only = %q, want none", got)
+	if got := rec.Header().Get("Content-Security-Policy-Report-Only"); !strings.HasPrefix(got, "style-src 'nonce-") {
+		t.Errorf("GET /: Content-Security-Policy-Report-Only = %q, want a style-src nonce policy", got)
+	}
+}
+
+func TestCSPStyleTagCarriesHeaderNonce(t *testing.T) {
+	nonce, body, _ := indexNonce(t, "/")
+	tags := styleOpenRE.FindAllString(body, -1)
+	if len(tags) != 1 {
+		t.Fatalf("GET /: %d <style> tags, want 1", len(tags))
+	}
+	if !strings.Contains(tags[0], ` nonce="`+nonce+`"`) {
+		t.Errorf("GET /: tag %s does not carry the header nonce %q", tags[0], nonce)
+	}
+}
+
+func TestCSPEmbeddedIndexMarksTheStyle(t *testing.T) {
+	tags := styleOpenRE.FindAll(web.Index, -1)
+	if len(tags) != 1 {
+		t.Fatalf("embedded index: %d <style> tags, want 1", len(tags))
+	}
+	if !bytes.Contains(tags[0], []byte(` nonce="`+nonceMarkerText+`"`)) {
+		t.Errorf("embedded index: tag %s has no nonce marker", tags[0])
+	}
+	if bytes.Contains(web.Index, []byte(`style=`)) {
+		t.Errorf("embedded index: contains style=, which style-src-attr 'none' would block")
 	}
 }
 

@@ -42,10 +42,11 @@ var ma = html.indexOf("// ── Export menu");
 var mb = html.indexOf("// ── end Export menu");
 if (ma < 0 || mb < ma) refuse("the Export menu marker block");
 var blockSrc = html.slice(ma, mb);
-var styleStart = html.indexOf("<style>");
+var styleOpen = /<style\b[^>]*>/.exec(html);
+var styleStart = styleOpen ? styleOpen.index : -1;
 var styleEnd = html.indexOf("</style>");
 if (styleStart < 0 || styleEnd < styleStart) refuse("the <style> block");
-var style = html.slice(styleStart + 7, styleEnd).replace(/\/\*[^]*?\*\//g, "");
+var style = html.slice(styleStart + styleOpen[0].length, styleEnd).replace(/\/\*[^]*?\*\//g, "");
 
 // ── tiny DOM: enough for the selectors the toolbar and menu code use ──
 class El {
