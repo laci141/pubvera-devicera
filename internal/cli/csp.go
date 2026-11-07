@@ -10,11 +10,12 @@ import "crypto/rand"
 // Style phase S2: the one <style> tag carries the same marker, and style-src
 // and style-src-attr are enforced in the same header, so a script or style
 // without the response nonce is blocked.
+//
+// connect-src PR B: the same header also ends with connect-src and the report
+// directives (cspConnectSrc in csp_report.go).
 const (
-	nonceMarker   = "__CSP_NONCE__"
-	cspHeaderName = "Content-Security-Policy"
-	// connect-src PR A: connect-src alone, report only (csp_report.go).
-	cspReportOnlyHeaderName      = "Content-Security-Policy-Report-Only"
+	nonceMarker                  = "__CSP_NONCE__"
+	cspHeaderName                = "Content-Security-Policy"
 	reportingEndpointsHeaderName = "Reporting-Endpoints"
 )
 

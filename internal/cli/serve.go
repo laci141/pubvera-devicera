@@ -302,9 +302,8 @@ func NewServeHandler() http.Handler {
 			// Never stored, so a deploy is visible on the next load and a cached
 			// copy cannot replay one nonce to every visitor.
 			w.Header().Set("Cache-Control", "no-store")
-			w.Header().Set(cspHeaderName, contentSecurityPolicy(nonce))
 			_, _, origin := supabaseConfig()
-			w.Header().Set(cspReportOnlyHeaderName, cspConnectSrcReportOnly(origin))
+			w.Header().Set(cspHeaderName, contentSecurityPolicy(nonce)+cspConnectSrc(origin))
 			w.Header().Set(reportingEndpointsHeaderName, `csp="/csp-report"`)
 			_, _ = w.Write(data)
 			return
@@ -363,7 +362,7 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	// supaURL, not url: the net/url package is imported in this file.
 	// supabaseConfig keeps the TrimSpace and half-config rules, and is the
-	// same source the index page's Report-Only connect-src reads.
+	// same source the index page's enforcing connect-src reads.
 	supaURL, supaKey, _ := supabaseConfig()
 	// Never cache: a stale key surviving a key rotation would be hard to
 	// diagnose from the browser side.
