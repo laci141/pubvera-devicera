@@ -300,7 +300,6 @@ func NewServeHandler() http.Handler {
 			// copy cannot replay one nonce to every visitor.
 			w.Header().Set("Cache-Control", "no-store")
 			w.Header().Set(cspHeaderName, contentSecurityPolicy(nonce))
-			w.Header().Set(cspReportOnlyHeaderName, styleReportOnlyPolicy(nonce))
 			_, _ = w.Write(data)
 			return
 		}

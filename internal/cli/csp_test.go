@@ -18,15 +18,10 @@ import (
 // NewServeHandler in-process (httptest), like root_cache_test.go.
 
 // wantPolicy is written out here rather than taken from contentSecurityPolicy,
-// so a change to any directive in serve.go fails a test.
+// so a change to any directive in serve.go fails a test. Style phase S2: the
+// style directives are enforced in the same header, with the same nonce.
 func wantPolicy(nonce string) string {
-	return "script-src 'nonce-" + nonce + "' 'strict-dynamic' https: 'unsafe-inline'; script-src-attr 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
-}
-
-// wantStylePolicy is the Report-Only style policy (style phase S1), written out
-// for the same reason as wantPolicy.
-func wantStylePolicy(nonce string) string {
-	return "style-src 'nonce-" + nonce + "'; style-src-attr 'none'"
+	return "script-src 'nonce-" + nonce + "' 'strict-dynamic' https: 'unsafe-inline'; script-src-attr 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; style-src 'nonce-" + nonce + "'; style-src-attr 'none'"
 }
 
 var styleOpenRE = regexp.MustCompile(`<style\b[^>]*>`)
@@ -99,26 +94,29 @@ func TestCSPHeaderIsEnforcedWithExactPolicy(t *testing.T) {
 	if got := h.Get("Content-Security-Policy"); got != wantPolicy(nonce) {
 		t.Errorf("Content-Security-Policy = %q, want %q", got, wantPolicy(nonce))
 	}
-	if got := h.Get("Content-Security-Policy-Report-Only"); got != wantStylePolicy(nonce) {
-		t.Errorf("Content-Security-Policy-Report-Only = %q, want %q", got, wantStylePolicy(nonce))
-	}
-	if strings.Contains(h.Get("Content-Security-Policy"), "style-src") {
-		t.Errorf("Content-Security-Policy names style-src; S1 must leave the enforced policy unchanged")
+	if got := h.Values("Content-Security-Policy-Report-Only"); len(got) != 0 {
+		t.Errorf("Content-Security-Policy-Report-Only = %q, want none (S2 enforces style-src)", got)
 	}
 	if cspHeaderName != "Content-Security-Policy" {
 		t.Errorf("cspHeaderName = %q", cspHeaderName)
 	}
 }
 
-// TestCSPIndexSendsBothHeaders does not use indexNonce, so a missing
-// enforcing header does not hide the Report-Only check.
-func TestCSPIndexSendsBothHeaders(t *testing.T) {
-	rec := get(NewServeHandler(), "/")
-	if got := rec.Header().Get("Content-Security-Policy"); got == "" {
-		t.Errorf("GET /: Content-Security-Policy = %q, want a policy", got)
+// TestCSPIndexSendsOnlyTheEnforcingHeader checks the header count directly, so
+// a second CSP value or a leftover Report-Only header fails here.
+func TestCSPIndexSendsOnlyTheEnforcingHeader(t *testing.T) {
+	nonce, _, h := indexNonce(t, "/")
+	got := h.Values("Content-Security-Policy")
+	if len(got) != 1 {
+		t.Fatalf("GET /: %d Content-Security-Policy values %q, want 1", len(got), got)
 	}
-	if got := rec.Header().Get("Content-Security-Policy-Report-Only"); !strings.HasPrefix(got, "style-src 'nonce-") {
-		t.Errorf("GET /: Content-Security-Policy-Report-Only = %q, want a style-src nonce policy", got)
+	if ro := h.Values("Content-Security-Policy-Report-Only"); len(ro) != 0 {
+		t.Errorf("GET /: Content-Security-Policy-Report-Only = %q, want none", ro)
+	}
+	for _, d := range []string{"style-src 'nonce-" + nonce + "'", "style-src-attr 'none'"} {
+		if !strings.Contains(got[0], d) {
+			t.Errorf("GET /: Content-Security-Policy = %q, want it to contain %q", got[0], d)
+		}
 	}
 }
 
