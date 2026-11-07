@@ -13,6 +13,9 @@ import "crypto/rand"
 const (
 	nonceMarker   = "__CSP_NONCE__"
 	cspHeaderName = "Content-Security-Policy"
+	// connect-src PR A: connect-src alone, report only (csp_report.go).
+	cspReportOnlyHeaderName      = "Content-Security-Policy-Report-Only"
+	reportingEndpointsHeaderName = "Reporting-Endpoints"
 )
 
 // nonceRandRead is the random source for the CSP nonce. It is a variable only
