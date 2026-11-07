@@ -7,12 +7,12 @@ import "crypto/rand"
 // with a fresh nonce named in the policy header. The policy is enforced: a
 // script without the response's nonce is blocked.
 //
-// Style phase S1: the one <style> tag carries the same marker, and a separate
-// Report-Only header reports (without blocking) styles that lack the nonce.
+// Style phase S2: the one <style> tag carries the same marker, and style-src
+// and style-src-attr are enforced in the same header, so a script or style
+// without the response nonce is blocked.
 const (
-	nonceMarker             = "__CSP_NONCE__"
-	cspHeaderName           = "Content-Security-Policy"
-	cspReportOnlyHeaderName = "Content-Security-Policy-Report-Only"
+	nonceMarker   = "__CSP_NONCE__"
+	cspHeaderName = "Content-Security-Policy"
 )
 
 // nonceRandRead is the random source for the CSP nonce. It is a variable only
@@ -24,11 +24,5 @@ var nonceRandRead = rand.Read
 // nonces and 'strict-dynamic'; browsers that understand nonce plus
 // 'strict-dynamic' (Chrome 52+, Firefox 52+, Safari 15.4+) ignore both.
 func contentSecurityPolicy(nonce string) string {
-	return "script-src 'nonce-" + nonce + "' 'strict-dynamic' https: 'unsafe-inline'; script-src-attr 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
-}
-
-// styleReportOnlyPolicy is the Report-Only style policy (style phase S1). It
-// uses the same nonce as the enforced script policy.
-func styleReportOnlyPolicy(nonce string) string {
-	return "style-src 'nonce-" + nonce + "'; style-src-attr 'none'"
+	return "script-src 'nonce-" + nonce + "' 'strict-dynamic' https: 'unsafe-inline'; script-src-attr 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; style-src 'nonce-" + nonce + "'; style-src-attr 'none'"
 }
