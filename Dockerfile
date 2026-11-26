@@ -15,7 +15,12 @@ RUN CGO_ENABLED=0 go build \
 # Stage 2: minimal runtime
 FROM debian:trixie-slim
 # CA certificates for the HTTPS API calls (openFDA, ClinicalTrials.gov, PubMed).
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+# Debian security fixes (zlib1g, libc6/libc-bin, libzstd1, passwd/login.defs):
+# upgraded by name with --only-upgrade so only these packages move, never a
+# bare apt-get upgrade.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends --only-upgrade libc6 libc-bin zlib1g libzstd1 login.defs passwd \
     && rm -rf /var/lib/apt/lists/*
 # The unprivileged user the server runs as (see USER below). UID 10001 is the
 # same as pubvera-bibliovera and pubvera-grantvera, so host-side checks use one
